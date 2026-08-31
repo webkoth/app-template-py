@@ -158,12 +158,14 @@ app-template-py/
         security.py      scrypt, подпись токена, кука
         deps.py          current_user, require_role
         audit.py         запись в журнал
+        users.py         таблица учётных записей: её читает deps на каждом
+                         запросе, поэтому здесь, а не в фиче
         errors.py        конверт ошибки и обработчики
         static.py        раздача собранного фронтенда
       domain/            чистая логика: money, dates, expenses, roles
       features/
         auth/            router, service, schemas
-        users/           router, service, schemas, models
+        users/           router, service, schemas
         expenses/        router, service, schemas, models
         meta/            router: health, build-info, содержимое AGENTS.md и docs/
     alembic/versions/
