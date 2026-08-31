@@ -1595,7 +1595,7 @@ git commit -m "feat: движок и сессия SQLAlchemy"
 **Files:**
 - Create: `backend/app/core/audit.py`
 - Create: `backend/app/features/users/__init__.py`
-- Create: `backend/app/features/users/models.py`
+- Create: `backend/app/core/users.py`
 - Create: `backend/app/features/expenses/__init__.py`
 - Create: `backend/app/features/expenses/models.py`
 
@@ -1734,7 +1734,7 @@ def test_truncation_counts_characters_not_bytes():
     assert len(result) == DETAIL_MAX
 ```
 
-- [ ] **Шаг 3: Написать `backend/app/features/users/models.py`**
+- [ ] **Шаг 3: Написать `backend/app/core/users.py`**
 
 ```python
 """Учётные записи приложения. Вход только собственный."""
@@ -1925,7 +1925,7 @@ from app.core.db import Base
 # isort: split
 from app.core.audit import AuditLog  # noqa: F401
 from app.features.expenses.models import Expense  # noqa: F401
-from app.features.users.models import User  # noqa: F401
+from app.core.users import User  # noqa: F401
 
 config = context.config
 # %% вместо %: set_main_option кладёт значение в ConfigParser, а тот считает
@@ -3435,7 +3435,7 @@ from app.core.config import settings
 from app.core.db import get_session
 from app.core.security import AUTH_COOKIE, verify_session_token
 from app.domain.roles import Role, has_rank
-from app.features.users.models import User, UserStatus
+from app.core.users import User, UserStatus
 
 logger = logging.getLogger(__name__)
 
@@ -3558,7 +3558,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import Base, engine, get_session
 from app.core.security import hash_password
 from app.domain.roles import Role
-from app.features.users.models import User, UserStatus
+from app.core.users import User, UserStatus
 from app.main import app
 
 
@@ -3831,7 +3831,7 @@ from sqlalchemy import select
 
 from app.core.security import AUTH_COOKIE
 from app.domain.roles import Role
-from app.features.users.models import User, UserStatus
+from app.core.users import User, UserStatus
 
 
 async def test_login_sets_cookie(client, make_user):
@@ -4000,7 +4000,7 @@ from app.core.errors import RuleViolation
 from app.core.rate_limit import address_limiter, login_limiter
 from app.core.security import hash_password, sign_session_token, verify_password
 from app.domain.roles import Role
-from app.features.users.models import User, UserStatus
+from app.core.users import User, UserStatus
 
 logger = logging.getLogger(__name__)
 
@@ -4212,7 +4212,7 @@ from sqlalchemy import select
 
 from app.core.audit import AuditLog
 from app.domain.roles import Role
-from app.features.users.models import User, UserStatus
+from app.core.users import User, UserStatus
 
 
 async def test_list_requires_admin(client, login_as):
@@ -4354,7 +4354,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.domain.roles import Role
-from app.features.users.models import UserStatus
+from app.core.users import UserStatus
 
 # Восемь символов — не про стойкость, а про то, чтобы не заводили «123».
 # Настоящую защиту даёт ограничение попыток входа.
@@ -4412,7 +4412,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.errors import RuleViolation
 from app.core.security import hash_password
-from app.features.users.models import User, UserStatus
+from app.core.users import User, UserStatus
 from app.features.users.schemas import CreateUserRequest, UpdateUserRequest
 
 
@@ -5119,7 +5119,6 @@ source_modules =
     app.features.users.router
     app.features.expenses.router
 forbidden_modules =
-    app.features.users.models
     app.features.expenses.models
 ```
 
