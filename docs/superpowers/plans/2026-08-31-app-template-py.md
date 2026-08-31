@@ -2374,6 +2374,20 @@ def test_expired_token_rejected():
     assert verify_session_token(old, SECRET, now_ms=NOW) is None
 
 
+def test_future_token_rejected():
+    # Время выдачи ставит сервер, но его часы могут скакнуть вперёд.
+    # Односторонняя проверка срока такие токены не ловит, и они живут
+    # вечно — то есть проверка срока перестаёт что-либо значить.
+    ahead = sign_session_token("admin", NOW + 10 * 365 * 24 * 3600 * 1000, SECRET)
+    assert verify_session_token(ahead, SECRET, now_ms=NOW) is None
+
+
+def test_small_clock_skew_tolerated():
+    # Секундная разница часов не повод отвергать вход.
+    slightly_ahead = sign_session_token("admin", NOW + 30 * 1000, SECRET)
+    assert verify_session_token(slightly_ahead, SECRET, now_ms=NOW) is not None
+
+
 def test_token_at_age_limit_still_accepted():
     issued = NOW - SESSION_MAX_AGE_SECONDS * 1000
     edge = sign_session_token("admin", issued, SECRET)
@@ -2408,6 +2422,10 @@ _SEPARATOR = "\n"
 # перехваченный токен действует вечно, потому что подпись у него остаётся
 # верной навсегда.
 SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
+# Допуск на расхождение часов. Нужен, чтобы отвергать токены «из будущего»,
+# не придираясь к секундной разнице.
+CLOCK_SKEW_SECONDS = 60
 
 
 def _b64encode(raw: bytes) -> str:
@@ -2466,7 +2484,16 @@ def verify_session_token(
     # ждать неделю.
     if now_ms is None:
         now_ms = int(time.time() * 1000)
-    if now_ms - issued_at_ms > SESSION_MAX_AGE_SECONDS * 1000:
+    age_ms = now_ms - issued_at_ms
+    if age_ms > SESSION_MAX_AGE_SECONDS * 1000:
+        return None
+    # Забор с обеих сторон. Односторонняя проверка ловит только прошлое, а
+    # токен с временем выдачи в будущем живёт вечно. Подделать его без
+    # секрета нельзя, но время ставит сервер, и его часы могут скакнуть
+    # вперёд — поправкой NTP или восстановлением машины из снимка. Выданные
+    # в этот момент токены переживут семь дней, и проверка срока перестанет
+    # что-либо значить именно тогда, когда понадобится.
+    if age_ms < -CLOCK_SKEW_SECONDS * 1000:
         return None
 
     return login, issued_at_ms
@@ -2480,7 +2507,7 @@ def verify_session_token(
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_token.py -v`
-Expected: PASS, 9 passed
+Expected: PASS, 11 passed
 
 - [ ] **Шаг 5: Коммит**
 
