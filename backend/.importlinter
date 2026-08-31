@@ -1,0 +1,18 @@
+[importlinter]
+root_packages =
+    app
+# Обязательно, когда среди forbidden_modules есть внешние пакеты. Без этой
+# строки import-linter отказывается разбирать конфиг целиком, а не молча
+# пропускает контракт.
+include_external_packages = True
+
+[importlinter:contract:domain-is-pure]
+name = domain не знает ни про базу, ни про HTTP, ни про фичи
+type = forbidden
+source_modules =
+    app.domain
+forbidden_modules =
+    app.core
+    app.features
+    sqlalchemy
+    fastapi
