@@ -2202,9 +2202,14 @@ Expected: FAIL — `ImportError: cannot import name 'hash_password'`
 ```python
 """Пароли и подпись сессии.
 
-Параметры scrypt совпадают с умолчаниями Node (N=16384, r=8, p=1, 64 байта),
-поэтому строки хешей совместимы с app-template-ts: базу с пользователями
-можно перенести между шаблонами без сброса паролей.
+Параметры scrypt совпадают с теми, что задаёт app-template-ts (N=16384,
+r=8, p=1, 64 байта, соль 16 байт), поэтому строки хешей совместимы: базу с
+пользователями можно перенести между шаблонами без сброса паролей.
+
+Совместимость проверена прогоном в обе стороны, а не выведена из
+документации: хеш, созданный в Node, принимается здесь, хеш, созданный
+здесь, принимается в Node — включая пароль кириллицей, то есть кодировка
+UTF-8 у обеих сторон совпадает.
 """
 
 import base64
@@ -3488,6 +3493,23 @@ async def test_duplicate_login_rejected_with_message(client, login_as):
     assert second.json()["field"] == "login"
 
 
+async def test_all_digit_password_rejected(client, login_as):
+    # Восемь цифр проходят по длине, но это дата или телефон — то, что
+    # подбирают первым.
+    await login_as(role=Role.admin, login="boss")
+    response = await client.post(
+        "/api/users",
+        json={
+            "login": "ivan",
+            "name": "Иван",
+            "role": "viewer",
+            "password": "20260831",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["field"] == "password"
+
+
 async def test_short_password_rejected(client, login_as):
     await login_as(role=Role.admin, login="boss")
     response = await client.post(
@@ -3545,7 +3567,7 @@ Expected: FAIL — маршрутов `/api/users` ещё нет.
 ```python
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.domain.roles import Role
 from app.features.users.models import UserStatus
@@ -3572,6 +3594,16 @@ class CreateUserRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     role: Role
     password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=1024)
+
+    @field_validator("password")
+    @classmethod
+    def _not_only_digits(cls, value: str) -> str:
+        # Восьми символов мало, если все они цифры: дата рождения, телефон и
+        # «12345678» проходят по длине и подбираются первыми. Запрет ровно
+        # тот же, что в app-template-ts, и по той же причине.
+        if value.isdigit():
+            raise ValueError("Пароль из одних цифр не годится")
+        return value
 
 
 class UpdateUserRequest(BaseModel):
@@ -3723,7 +3755,7 @@ async def update_user(
 - [ ] **Шаг 6: Запустить тест (после задачи 22)**
 
 Run: `cd backend && uv run pytest tests/api/test_users.py -v`
-Expected: PASS, 10 passed
+Expected: PASS, 11 passed
 
 - [ ] **Шаг 7: Коммит**
 
