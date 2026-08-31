@@ -2905,9 +2905,18 @@ git commit -m "feat: ограничение попыток входа по ло�
 Create `backend/tests/unit/test_errors.py`:
 
 ```python
+import json
+
+import pytest
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from app.core.errors import RuleViolation, validation_error_to_envelope
+from app.core.errors import (
+    FALLBACK_MESSAGE,
+    RuleViolation,
+    _first_issue,
+    validation_error_to_envelope,
+)
 
 
 class Sample(BaseModel):
@@ -2942,6 +2951,88 @@ def test_missing_field_reports_its_name():
     except ValidationError as exc:
         envelope = validation_error_to_envelope(exc)
     assert envelope["field"] == "title"
+
+
+def test_empty_error_list_does_not_raise():
+    # RequestValidationError с пустым списком прекрасно конструируется, а
+    # обработчик на нём падал IndexError — то есть ошибка ввода
+    # превращалась в пятисотку. Проверено воспроизведением.
+    assert _first_issue([], strip_marker=True) == {
+        "error": FALLBACK_MESSAGE,
+        "field": None,
+    }
+
+
+def test_location_marker_stripped_only_from_head():
+    # Отсев по значению, а не по позиции, съедал бы поле формы, которое
+    # само называется "query" или "body": в loc такого поля маркер и имя
+    # совпадают, и фильтр по значению вычищал оба.
+    assert (
+        _first_issue(
+            [{"loc": ("body", "query"), "msg": "x", "type": "missing"}],
+            strip_marker=True,
+        )["field"]
+        == "query"
+    )
+    # А маркер, стоящий в одиночку, означает само место, а не поле, и
+    # именем поля стать не должен.
+    assert (
+        _first_issue(
+            [{"loc": ("body",), "msg": "x", "type": "model_type"}],
+            strip_marker=True,
+        )["field"]
+        is None
+    )
+
+
+def test_plain_validation_error_keeps_field_name():
+    # У голого ValidationError маркера места нет, и снятие головы съело бы
+    # настоящее имя поля.
+    class Search(BaseModel):
+        query: str = Field(min_length=1)
+
+    try:
+        Search(query="")
+    except ValidationError as error:
+        envelope = validation_error_to_envelope(error)
+    else:
+        pytest.fail("модель обязана была отвергнуть значение")
+    assert envelope["field"] == "query"
+
+
+def test_lone_surrogate_does_not_break_response():
+    # Одинокий суррогат приходит из тела запроса, а Starlette сериализует
+    # ответ без экранирования — построение ответа падало UnicodeEncodeError
+    # внутри самого обработчика, превращая отказ 400 в 500.
+    bad = json.loads('"\\ud800"')
+    envelope = _first_issue(
+        [{"loc": ("body", "title"), "msg": f"Плохо: {bad}", "type": "value_error"}],
+        strip_marker=True,
+    )
+    JSONResponse(content=envelope)  # не должно бросать
+
+
+def test_pydantic_message_translated():
+    # Человек читает именно это сообщение, а pydantic пишет по-английски.
+    assert (
+        _first_issue(
+            [{"loc": ("body", "login"), "msg": "Field required", "type": "missing"}],
+            strip_marker=True,
+        )["error"]
+        == "Обязательное поле"
+    )
+
+
+def test_unknown_type_message_passed_through():
+    # Незнакомый тип отдаётся как есть: неудобный английский лучше, чем
+    # потерянная причина.
+    assert (
+        _first_issue(
+            [{"loc": ("body", "x"), "msg": "Something odd", "type": "чужой_тип"}],
+            strip_marker=True,
+        )["error"]
+        == "Something odd"
+    )
 ```
 
 - [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
@@ -2956,8 +3047,8 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'app.core.errors'`
 
 Ожидаемые ошибки возвращаются, а не бросаются наружу как сбой. Клиент
 разбирает одну форму ответа независимо от того, кто отказал — валидатор
-схемы или правило в сервисе; иначе на клиенте появятся две ветки разбора,
-и вторая будет написана хуже.
+схемы или правило в сервисе; иначе на клиенте появятся две ветки разбора, и
+вторая будет написана хуже.
 """
 
 import logging
@@ -2969,6 +3060,39 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
+
+FALLBACK_MESSAGE = "Значение не подходит"
+
+# Маркеры места, которые FastAPI ставит первым элементом loc. Снимается
+# только голова, и только у ошибок разбора запроса: отсев по значению съел
+# бы поле формы, которое само называется "query" или "body", — а поисковая
+# строка с именем query вещь обычная.
+_LOCATION_MARKERS = frozenset({"body", "query", "path", "header", "cookie"})
+
+# Тексты pydantic — английские и техничные: «String should have at least 8
+# characters». Интерфейс приложения русский, и человек читает именно это
+# сообщение, поэтому частые случаи переводятся. Незнакомый тип отдаётся как
+# есть: неудобный английский лучше, чем потерянная причина.
+_MESSAGES = {
+    "missing": "Обязательное поле",
+    "string_too_short": "Слишком короткое значение",
+    "string_too_long": "Слишком длинное значение",
+    "string_pattern_mismatch": "Недопустимые символы",
+    "string_type": "Нужна строка",
+    "int_parsing": "Нужно целое число",
+    "int_type": "Нужно целое число",
+    "float_parsing": "Нужно число",
+    "bool_parsing": "Нужно да или нет",
+    "enum": "Недопустимое значение",
+    "literal_error": "Недопустимое значение",
+    "model_type": "Тело запроса должно быть объектом",
+    "extra_forbidden": "Лишнее поле",
+    "greater_than": "Значение слишком мало",
+    "less_than": "Значение слишком велико",
+}
+
+# Префикс, которым pydantic оборачивает текст нашего собственного ValueError.
+_VALUE_ERROR_PREFIX = "Value error, "
 
 
 class Envelope(TypedDict):
@@ -2985,17 +3109,60 @@ class RuleViolation(Exception):
         self.field = field
 
 
-def _first_issue(errors: list[dict[str, object]]) -> Envelope:
+def _printable(text: str) -> str:
+    """Убирает из текста то, что невозможно отправить.
+
+    Одинокий суррогат приходит из тела запроса — `json.loads('"\\ud800"')`
+    его возвращает, — а Starlette сериализует ответ без экранирования, и
+    построение ответа падает с UnicodeEncodeError. Падает при этом сам
+    обработчик ошибок, то есть отказ 400 превращается в 500 ровно тогда,
+    когда что-то уже пошло не так. Путь не теоретический: тексты вида
+    «Дата «{значение}» не похожа на дату» собираются из пользовательского
+    ввода. Проверено воспроизведением.
+    """
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _first_issue(errors: list[dict[str, object]], strip_marker: bool) -> Envelope:
+    """Первая ошибка из списка в виде конверта.
+
+    Наружу уходит одна, а не список: форма показывает одно сообщение, и
+    выбирать из пяти пришлось бы клиенту.
+    """
+    if not errors:
+        # Пустой список возможен: RequestValidationError с ним прекрасно
+        # конструируется. Без этой ветки обработчик падает IndexError, и
+        # ошибка ввода превращается в пятисотку. Проверено.
+        return Envelope(error=FALLBACK_MESSAGE, field=None)
+
     issue = errors[0]
-    location = [p for p in issue.get("loc", ()) if p not in ("body", "query")]  # type: ignore[union-attr]
+    # isinstance, а не приведение: значение приходит как object, и проверка
+    # типа заодно закрывает случай, когда loc отсутствует или равен None.
+    raw_location = issue.get("loc")
+    location = list(raw_location) if isinstance(raw_location, (list, tuple)) else []
+    if strip_marker and location and location[0] in _LOCATION_MARKERS:
+        location = location[1:]
+
+    raw = str(issue.get("msg", FALLBACK_MESSAGE))
+    if raw.startswith(_VALUE_ERROR_PREFIX):
+        # Текст нашего собственного валидатора, он уже по-русски.
+        message = raw[len(_VALUE_ERROR_PREFIX) :]
+    else:
+        message = _MESSAGES.get(str(issue.get("type", "")), raw)
+
     return Envelope(
-        error=str(issue.get("msg", "Значение не подходит")),
+        error=_printable(message),
         field=str(location[-1]) if location else None,
     )
 
 
-def validation_error_to_envelope(exc: ValidationError) -> Envelope:
-    return _first_issue(exc.errors())  # type: ignore[arg-type]
+def validation_error_to_envelope(error: ValidationError) -> Envelope:
+    """Конверт из ошибки прямой проверки модели.
+
+    Маркер места здесь не снимается: у голого ValidationError его нет, и
+    снятие головы съело бы настоящее имя поля.
+    """
+    return _first_issue(error.errors(), strip_marker=False)  # type: ignore[arg-type]
 
 
 def register_error_handlers(app: FastAPI) -> None:
@@ -3003,14 +3170,17 @@ def register_error_handlers(app: FastAPI) -> None:
     async def _rule(_: Request, exc: RuleViolation) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content=Envelope(error=exc.message, field=exc.field),
+            content=Envelope(error=_printable(exc.message), field=exc.field),
         )
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:
+        # 400, а не привычный 422: клиенту незачем различать «схема не
+        # сошлась» и «правило не пустило» — для человека это одна и та же
+        # ошибка в форме.
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content=_first_issue(exc.errors()),  # type: ignore[arg-type]
+            content=_first_issue(exc.errors(), strip_marker=True),  # type: ignore[arg-type]
         )
 
     @app.exception_handler(Exception)
@@ -3025,17 +3195,50 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 ```
 
-Ответ на невалидный ввод — 400, а не привычный FastAPI 422. Причина в
-контракте: клиент разбирает один код и одну форму, а различать «схема не
-сошлась» и «правило не пустило» ему незачем — для человека это одна и та же
-ошибка в форме.
+Обработчик ошибок — то место, где падение обходится дороже всего: оно
+превращает мелкую ошибку ввода в пятисотку без объяснений, причём именно
+тогда, когда что-то уже пошло не так. Четыре решения здесь закрывают
+воспроизведённые случаи такого падения или молчаливой потери смысла.
+
+**Пустой список ошибок.** `RequestValidationError` с ним прекрасно
+конструируется, а `errors()[0]` падает `IndexError`. Проверено: без этой
+ветки ответ — 500 «Что-то пошло не так» вместо 400 с текстом.
+
+**Маркер места снимается только с головы.** Отсев по значению съедал бы
+поле формы, которое само называется `query` или `body`: у такого поля
+маркер и имя совпадают, и фильтр вычищал оба. Поисковая строка с именем
+`query` — вещь обычная. У голого `ValidationError` маркера нет вовсе,
+поэтому там снятие выключено: иначе оно съело бы настоящее имя поля.
+
+**Одинокий суррогат в тексте.** Приходит из тела запроса — `json.loads`
+его возвращает, — а Starlette сериализует ответ без экранирования, и
+построение ответа падает `UnicodeEncodeError` внутри самого обработчика.
+Путь не теоретический: тексты вида «Дата «{значение}» не похожа на дату»
+собираются из пользовательского ввода. Проверено воспроизведением на
+настоящем `JSONResponse`.
+
+**Частые сообщения переводятся.** pydantic пишет по-английски и технично —
+«String should have at least 8 characters», — а человек читает именно этот
+текст. Незнакомый тип отдаётся как есть: неудобный английский лучше
+потерянной причины. Текст собственного валидатора распознаётся по префиксу
+`Value error, ` и отдаётся без него — он уже по-русски.
 
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_errors.py -v`
-Expected: PASS, 4 passed
+Expected: PASS, 10 passed
 
-- [ ] **Шаг 5: Коммит**
+- [ ] **Шаг 5: Доказать мутациями, что тесты не пустые**
+
+| Что сделать | Обязан упасть |
+|---|---|
+| `if not errors:` → `if False:` | два теста |
+| убрать снятие маркера (`if False:`) | `test_location_marker_stripped_only_from_head` |
+| вернуть фильтр по значению вместо позиционного | он же плюс `test_plain_validation_error_keeps_field_name` |
+| `_printable` возвращает `text` как есть | два теста |
+| `message = raw` вместо поиска в `_MESSAGES` | два теста |
+
+- [ ] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/core/errors.py backend/tests/unit/test_errors.py
@@ -3223,6 +3426,11 @@ async def session() -> AsyncIterator[AsyncSession]:
 
 @pytest.fixture
 async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
+    # Про проверку конверта пятисотки: Starlette после обработчика Exception
+    # перебрасывает исключение наружу, поэтому тест, который хочет увидеть
+    # именно 500 с конвертом, обязан создавать клиент с
+    # raise_server_exceptions=False — иначе он упадёт с исходным
+    # исключением, а не увидит ответ.
     async def _override() -> AsyncIterator[AsyncSession]:
         yield session
 
