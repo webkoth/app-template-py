@@ -2930,10 +2930,16 @@ import pytest
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+SURROGATE_JSON = '"\\ud800"'
+
 from app.core.errors import (
     FALLBACK_MESSAGE,
     RuleViolation,
     _first_issue,
+    register_error_handlers,
     validation_error_to_envelope,
 )
 
@@ -3052,6 +3058,94 @@ def test_unknown_type_message_passed_through():
         )["error"]
         == "Something odd"
     )
+
+
+class TestRegisteredHandlers:
+    """Проверки на настоящем приложении.
+
+    Половина модуля — обработчики, и раньше она не была покрыта ничем: все
+    четыре дефекта, найденных ревью, жили именно в ней.
+    """
+
+    @staticmethod
+    def build() -> TestClient:
+        app = FastAPI()
+        register_error_handlers(app)
+
+        class Body(BaseModel):
+            title: str = Field(min_length=1)
+
+        @app.post("/rule")
+        async def rule(payload: dict) -> None:
+            raise RuleViolation(payload.get("text", ""), field=payload.get("field"))
+
+        @app.get("/surrogate")
+        async def surrogate() -> None:
+            # Суррогат подаётся со стороны сервера: через тело запроса его
+            # не отправить, клиент сам не может его закодировать. В жизни
+            # он попадает сюда из уже разобранных данных.
+            bad = json.loads(SURROGATE_JSON)
+            raise RuleViolation(f"Плохо: {bad}", field=f"поле{bad}")
+
+        @app.post("/schema")
+        async def schema(body: Body) -> dict:
+            return {"ok": True}
+
+        @app.get("/boom")
+        async def boom() -> None:
+            raise RuntimeError(
+                "postgresql://user:пароль@10.0.0.5/prod /var/www/app/secret.py"
+            )
+
+        # raise_server_exceptions=False обязателен: иначе Starlette
+        # перебрасывает исходное исключение, и ответ 500 не увидеть.
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_rule_violation_answers_envelope(self):
+        response = self.build().post("/rule", json={"text": "Так нельзя", "field": "x"})
+        assert response.status_code == 400
+        assert response.json() == {"error": "Так нельзя", "field": "x"}
+
+    def test_surrogate_in_field_does_not_break_response(self):
+        # Текст был защищён, а соседний аргумент в той же строке — нет, и
+        # незащищённый суррогат в имени поля ронял построение ответа: отказ
+        # 400 превращался в 500 внутри самого обработчика ошибок.
+        response = self.build().get("/surrogate")
+        assert response.status_code == 400
+        assert response.json()["field"] is not None
+
+    def test_empty_message_falls_back(self):
+        response = self.build().post("/rule", json={"text": ""})
+        assert response.json()["error"] == FALLBACK_MESSAGE
+
+    def test_schema_error_answers_400_not_422(self):
+        response = self.build().post("/schema", json={"title": ""})
+        assert response.status_code == 400
+        assert response.json()["field"] == "title"
+
+    def test_unparseable_body_answers_envelope(self):
+        # Раньше отвечало {"detail": ...} — другой формой, мимо конверта.
+        response = self.build().post(
+            "/schema",
+            content=b"{not json",
+            headers={"content-type": "application/json"},
+        )
+        assert response.status_code == 400
+        assert set(response.json()) == {"error", "field"}
+        # Смещение в байтах не должно становиться именем поля.
+        assert response.json()["field"] is None
+
+    def test_not_found_answers_envelope(self):
+        response = self.build().get("/нет-такого")
+        assert response.status_code == 404
+        assert set(response.json()) == {"error", "field"}
+
+    def test_unexpected_failure_leaks_nothing(self):
+        response = self.build().get("/boom")
+        assert response.status_code == 500
+        body = response.text
+        for secret in ("пароль", "10.0.0.5", "/var/www", "postgresql"):
+            assert secret not in body
 ```
 
 - [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
@@ -3077,6 +3171,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -3108,6 +3203,12 @@ _MESSAGES = {
     "extra_forbidden": "Лишнее поле",
     "greater_than": "Значение слишком мало",
     "less_than": "Значение слишком велико",
+    # На HTTP-пути pydantic отдаёт именно model_attributes_type, а не
+    # model_type: последний бывает только при прямой проверке модели, где
+    # формулировка «тело запроса» неверна по смыслу.
+    "model_attributes_type": "Тело запроса должно быть объектом",
+    "json_invalid": "Тело запроса не разобрать как JSON",
+    "string_unicode": "Значение содержит недопустимые символы",
 }
 
 # Префикс, которым pydantic оборачивает текст нашего собственного ValueError.
@@ -3169,10 +3270,12 @@ def _first_issue(errors: list[dict[str, object]], strip_marker: bool) -> Envelop
     else:
         message = _MESSAGES.get(str(issue.get("type", "")), raw)
 
-    return Envelope(
-        error=_printable(message),
-        field=str(location[-1]) if location else None,
-    )
+    # Имя поля берётся, только если хвост пути — строка. У ошибки разбора
+    # JSON там лежит смещение в байтах (loc = ("body", 13)), и форма стала
+    # бы подсвечивать поле с именем «13».
+    tail = location[-1] if location else None
+    field = _printable(tail) if isinstance(tail, str) else None
+    return Envelope(error=_printable(message) or FALLBACK_MESSAGE, field=field)
 
 
 def validation_error_to_envelope(error: ValidationError) -> Envelope:
@@ -3189,7 +3292,13 @@ def register_error_handlers(app: FastAPI) -> None:
     async def _rule(_: Request, exc: RuleViolation) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content=Envelope(error=_printable(exc.message), field=exc.field),
+            content=Envelope(
+                error=_printable(exc.message) or FALLBACK_MESSAGE,
+                # field тоже через _printable: он приходит из того же
+                # пользовательского ввода, что и текст, и незащищённый
+                # суррогат в нём роняет построение ответа ровно так же.
+                field=_printable(exc.field) if exc.field else None,
+            ),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -3200,6 +3309,21 @@ def register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content=_first_issue(exc.errors(), strip_marker=True),  # type: ignore[arg-type]
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+        # Без этого обработчика отказы FastAPI уходят в своей форме
+        # {"detail": ...}, и обещание «одна форма ответа» не выполняется:
+        # так отвечают непарсимое тело, 404, 405 и — начиная с зависимостей
+        # доступа — все отказы по правам, то есть самая частая ошибка в
+        # работающем приложении.
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=Envelope(
+                error=_printable(str(exc.detail)) or FALLBACK_MESSAGE, field=None
+            ),
+            headers=getattr(exc, "headers", None),
         )
 
     @app.exception_handler(Exception)
@@ -3214,43 +3338,51 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 ```
 
-Обработчик ошибок — то место, где падение обходится дороже всего: оно
+Обработчик ошибок — место, где падение обходится дороже всего: оно
 превращает мелкую ошибку ввода в пятисотку без объяснений, причём именно
-тогда, когда что-то уже пошло не так. Четыре решения здесь закрывают
+тогда, когда что-то уже пошло не так. Восемь решений здесь закрывают
 воспроизведённые случаи такого падения или молчаливой потери смысла.
 
-**Пустой список ошибок.** `RequestValidationError` с ним прекрасно
-конструируется, а `errors()[0]` падает `IndexError`. Проверено: без этой
-ветки ответ — 500 «Что-то пошло не так» вместо 400 с текстом.
+**Пустой список ошибок.** `RequestValidationError` с ним конструируется, а
+`errors()[0]` падает `IndexError`. Без этой ветки ответ — 500 вместо 400.
 
 **Маркер места снимается только с головы.** Отсев по значению съедал бы
-поле формы, которое само называется `query` или `body`: у такого поля
-маркер и имя совпадают, и фильтр вычищал оба. Поисковая строка с именем
-`query` — вещь обычная. У голого `ValidationError` маркера нет вовсе,
-поэтому там снятие выключено: иначе оно съело бы настоящее имя поля.
+поле формы с именем `query` или `body`. У голого `ValidationError` маркера
+нет вовсе, поэтому там снятие выключено параметром.
 
-**Одинокий суррогат в тексте.** Приходит из тела запроса — `json.loads`
-его возвращает, — а Starlette сериализует ответ без экранирования, и
-построение ответа падает `UnicodeEncodeError` внутри самого обработчика.
-Путь не теоретический: тексты вида «Дата «{значение}» не похожа на дату»
-собираются из пользовательского ввода. Проверено воспроизведением на
-настоящем `JSONResponse`.
+**Имя поля берётся, только если хвост пути — строка.** У ошибки разбора
+JSON там лежит смещение в байтах, и форма подсвечивала бы поле «13».
 
-**Частые сообщения переводятся.** pydantic пишет по-английски и технично —
-«String should have at least 8 characters», — а человек читает именно этот
-текст. Незнакомый тип отдаётся как есть: неудобный английский лучше
-потерянной причины. Текст собственного валидатора распознаётся по префиксу
-`Value error, ` и отдаётся без него — он уже по-русски.
+**Одинокий суррогат чистится и в тексте, и в имени поля.** Второе важнее
+первого: защитить текст и оставить незащищённым соседний аргумент в той же
+строке — ровно та ошибка, которую этот модуль и призван не допускать.
+Starlette сериализует ответ без экранирования, и построение ответа падает
+`UnicodeEncodeError` внутри самого обработчика.
+
+**Отказы `HTTPException` тоже уходят конвертом.** Без этого обработчика
+непарсимое тело, 404, 405 и все отказы по правам из задачи 16 отвечают в
+своей форме `{"detail": ...}`, и обещание «одна форма ответа» не
+выполняется на самой частой ошибке работающего приложения.
+
+**Пустой текст заменяется запасным.** Отказ без единого слова бесполезен.
+
+**Частые сообщения переводятся.** pydantic пишет по-английски и технично, а
+человек читает именно этот текст. На HTTP-пути приходит
+`model_attributes_type`, а не `model_type`: последний бывает только при
+прямой проверке модели.
+
+**Ответ на невалидный ввод — 400, а не 422.** Клиенту незачем различать
+«схема не сошлась» и «правило не пустило» — для человека это одна ошибка.
 
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_errors.py -v`
-Expected: PASS, 10 passed
+Expected: PASS, 17 passed
 
 - [ ] **Шаг 5: Доказать мутациями, что тесты не пустые**
 
-Указано имя теста, а не число падений: число зависит от того, какие ещё
-случаи подаёт набор, и сверять его бесполезно.
+Перед каждой мутацией удаляй `__pycache__` — см. раздел «Как пользоваться
+этим планом». Указано имя теста, а не число падений.
 
 | Что сделать | Обязан упасть |
 |---|---|
@@ -3258,6 +3390,10 @@ Expected: PASS, 10 passed
 | убрать снятие маркера (`if False:`) | `test_location_marker_stripped_only_from_head` |
 | вернуть фильтр по значению вместо позиционного | он же и `test_plain_validation_error_keeps_field_name` |
 | `_printable` возвращает `text` как есть | `test_lone_surrogate_does_not_break_response` |
+| убрать `_printable` у `exc.field` | `test_surrogate_in_field_does_not_break_response` |
+| убрать обработчик `StarletteHTTPException` | `test_not_found_answers_envelope` |
+| имя поля брать и из нестрокового хвоста | `test_unparseable_body_answers_envelope` |
+| убрать `or FALLBACK_MESSAGE` у `exc.message` | `test_empty_message_falls_back` |
 | `message = raw` вместо поиска в `_MESSAGES` | `test_pydantic_message_translated` |
 
 - [ ] **Шаг 6: Коммит**
