@@ -23,8 +23,8 @@ from app.core.db import Base
 # случайным импортом из трёх, а объяснять он должен все три.
 # isort: split
 from app.core.audit import AuditLog  # noqa: F401
+from app.core.users import User  # noqa: F401
 from app.features.expenses.models import Expense  # noqa: F401
-from app.features.users.models import User  # noqa: F401
 
 config = context.config
 # %% вместо %: set_main_option кладёт значение в ConfigParser, а тот считает

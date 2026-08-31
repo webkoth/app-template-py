@@ -17,8 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import get_session
 from app.core.security import AUTH_COOKIE, verify_session_token
+from app.core.users import User, UserStatus
 from app.domain.roles import Role, has_rank
-from app.features.users.models import User, UserStatus
 
 logger = logging.getLogger(__name__)
 
