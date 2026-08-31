@@ -1495,7 +1495,35 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 Run: `cd backend && uv run mypy app`
 Expected: Success, no issues
 
-- [ ] **Шаг 3: Коммит**
+- [ ] **Шаг 3: Проверить подключение к живой базе**
+
+Подстановка драйвера `+asyncpg` сделана руками в `async_database_url`, и
+работает ли она против настоящего PostgreSQL, до сих пор нигде не
+проверялось. Выяснить это на задаче 17, когда упадут все тесты сразу, —
+плохой момент.
+
+Роль и базы заводятся в задаче 11 (шаг 4). Если их ещё нет, выполнить тот
+шаг сейчас, иначе проверка ниже отвечает `role "apptemplate" does not exist`.
+
+```bash
+cd backend && uv run python -c "
+import asyncio
+from sqlalchemy import text
+from app.core.db import SessionFactory
+
+async def main():
+    async with SessionFactory() as session:
+        print((await session.execute(text('SELECT version()'))).scalar_one()[:40])
+
+asyncio.run(main())
+"
+```
+
+Ожидается строка вида `PostgreSQL 18.4 ...`. Ошибка здесь означает одно из
+трёх: не поднят PostgreSQL, нет роли или базы, либо драйвер подставлен
+неверно — и все три надо чинить сейчас, а не в задаче 17.
+
+- [ ] **Шаг 4: Коммит**
 
 ```bash
 git add backend/app/core/db.py
@@ -1819,12 +1847,33 @@ else:
     run_migrations_online()
 ```
 
-- [ ] **Шаг 4: Завести локальную базу**
+- [ ] **Шаг 4: Завести локальную роль и базы**
+
+Роль создаётся первой: `.env` подключается под ней, и без неё базы будут
+существовать, но подключиться к ним по строке из `.env` не выйдет —
+`FATAL: role "apptemplate" does not exist`. Ошибка появляется не при
+создании баз, а позже, при первой миграции, и ищут её не там.
+
+Имя и пароль совпадают со слагом приложения. На контуре роль заводит
+провижинер (`<слаг>_app` со сгенерированным паролем), локально — это ручной
+шаг установки.
 
 ```bash
+psql -d postgres -c "CREATE ROLE apptemplate LOGIN PASSWORD 'apptemplate'"
 createdb apptemplate_dev
 createdb apptemplate_e2e
+psql -d postgres -c "ALTER DATABASE apptemplate_dev OWNER TO apptemplate"
+psql -d postgres -c "ALTER DATABASE apptemplate_e2e OWNER TO apptemplate"
 ```
+
+Проверить, что строка из `.env` действительно работает:
+
+```bash
+psql "$(grep '^DATABASE_URL=' .env | sed 's/DATABASE_URL=//;s/\"//g')" \
+  -tAc 'SELECT current_user, current_database()'
+```
+
+Ожидается `apptemplate|apptemplate_dev`.
 
 Если `createdb` не найден — PostgreSQL 18 не установлен; поставить через
 `brew install postgresql@18` (macOS) или `apt install postgresql-18` (Ubuntu).
