@@ -192,15 +192,31 @@ git commit -m "chore: каркас бэкенда, зависимости и п�
 Create `backend/tests/unit/test_config.py`:
 
 ```python
+import os
+
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings
+from app.core.config import Settings, describe_validation_error
 
 BASE = {
     "DATABASE_URL": "postgresql://u:p@localhost:5432/db",
     "APP_AUTH_SECRET": "x" * 32,
 }
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Убирает переменные приложения из окружения процесса.
+
+    `_env_file=None` отключает файл, но не `os.environ`. Экспортированный в
+    шелле или унаследованный от соседней задачи CI `APP_ENV=production` ронял
+    бы тест про значения по умолчанию — или, что хуже, тихо подменял бы
+    проверяемое значение, и тест проходил бы, проверив не то.
+    """
+    for name in list(os.environ):
+        if name.startswith(("APP_", "DATABASE_URL", "COOKIE_")):
+            monkeypatch.delenv(name, raising=False)
 
 
 def test_defaults_are_local_and_insecure_cookie():
@@ -242,10 +258,70 @@ def test_production_with_secure_cookie_is_valid():
 
 def test_async_url_swaps_driver():
     # Провижинер пишет в .env строку postgresql://, а asyncpg требует
-    # postgresql+asyncpg://. Преобразование живёт здесь, потому что править
+    # postgresql+asyncpg://. Преобразование живёт в коде, потому что править
     # общий app-provision ради одного шаблона нельзя.
     s = Settings(_env_file=None, **BASE)
     assert s.async_database_url == "postgresql+asyncpg://u:p@localhost:5432/db"
+
+
+def test_async_url_keeps_query_parameters():
+    # Хвост строки терять нельзя: без sslmode соединение к внешней базе
+    # молча пойдёт открытым.
+    s = Settings(
+        _env_file=None,
+        **{**BASE, "DATABASE_URL": "postgresql://u:p@h/db?sslmode=require"},
+    )
+    assert s.async_database_url.endswith("/db?sslmode=require")
+
+
+def test_typo_in_variable_name_is_rejected():
+    # Главное свойство extra="forbid". При ignore опечатка неотличима от
+    # отсутствия переменной: контур поднялся бы как local, без Secure-куки,
+    # и никто бы этого не заметил.
+    with pytest.raises(ValidationError) as e:
+        Settings(_env_file=None, **{**BASE, "APP_ENVV": "production"})
+    assert "APP_ENVV" in str(e.value) or "app_envv" in str(e.value)
+
+
+class TestBootstrapEnabled:
+    def test_enabled_by_default(self):
+        assert Settings(_env_file=None, **BASE).bootstrap_enabled is True
+
+    def test_empty_login_disables(self):
+        s = Settings(_env_file=None, **{**BASE, "APP_BOOTSTRAP_LOGIN": ""})
+        assert s.bootstrap_enabled is False
+
+    def test_empty_password_disables(self):
+        s = Settings(_env_file=None, **{**BASE, "APP_BOOTSTRAP_PASSWORD": ""})
+        assert s.bootstrap_enabled is False
+
+    def test_whitespace_only_password_disables(self):
+        # Пробел не пуст для bool(), и без strip() сентинел молча завёл бы
+        # рабочую учётную запись с паролем из одного пробела.
+        s = Settings(_env_file=None, **{**BASE, "APP_BOOTSTRAP_PASSWORD": "   "})
+        assert s.bootstrap_enabled is False
+
+
+def test_error_text_does_not_leak_secrets():
+    # pydantic кладёт в ValidationError весь входной словарь целиком — вместе
+    # с боевым паролем базы и секретом подписи, — даже когда упавшая проверка
+    # вообще не про них. Наружу должно уходить только имя поля и текст.
+    try:
+        Settings(
+            _env_file=None,
+            DATABASE_URL="postgresql://dbuser:ПАРОЛЬБАЗЫ@10.0.0.5/prod",
+            APP_AUTH_SECRET="СЕКРЕТПОДПИСИ" + "q" * 20,
+            APP_ENV="production",
+            COOKIE_SECURE="false",
+        )
+    except ValidationError as error:
+        text = describe_validation_error(error)
+    else:
+        pytest.fail("конфигурация обязана была быть отвергнута")
+
+    assert "ПАРОЛЬБАЗЫ" not in text
+    assert "СЕКРЕТПОДПИСИ" not in text
+    assert "Secure" in text
 ```
 
 - [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
@@ -263,21 +339,37 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'app.core.config'`
 контуре — это боевая система с общеизвестной подписью.
 """
 
+from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Корень репозитория: app/core/config.py → core, app, backend, корень.
+#
+# Путь считается от файла, а не от рабочего каталога процесса. Провижинер
+# кладёт .env в корень (/var/www/<слаг>/.env), а pm2 запускает приложение с
+# --cwd .../backend: относительный путь ".env" там не нашёлся бы, и контур не
+# поднялся бы вовсе с невнятным «Field required». Проверено запуском из обоих
+# каталогов.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ENV_FILE = REPO_ROOT / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=ENV_FILE,
         env_file_encoding="utf-8",
-        # Лишние переменные в окружении сервера — норма (их кладёт pm2),
-        # и падать из-за них приложение не должно.
-        extra="ignore",
+        # forbid, а не ignore. При ignore опечатка в имени переменной
+        # неотличима от её отсутствия: APP_ENVV=production молча оставляет
+        # app_env="local", а APP_BOOTSTRAP_PASSWRD=... оставляет пароль
+        # "admin" — то есть боевой контур поднимается с общеизвестной парой и
+        # без Secure-куки, ничего не сказав. Посторонние переменные окружения
+        # (PATH, PM2_HOME) под forbid не мешают: pydantic-settings собирает из
+        # os.environ только объявленные здесь поля. Проверено.
+        extra="forbid",
         case_sensitive=False,
-        # Имена полей в ошибках валидации — заглавными, то есть ровно так, как
+        # Имена полей в ошибках — заглавными, то есть ровно так, как
         # переменная называется в .env. Без этого pydantic пишет питоновское
         # имя (app_auth_secret), и человек ищет в .env строку, которой там нет.
         # populate_by_name оставляет возможность создать Settings и по
@@ -299,9 +391,6 @@ class Settings(BaseSettings):
     # .env.example: контур без этих переменных должен пускать той же парой, а
     # не оставаться без входа вовсе. Проверки силы пароля нет намеренно — она
     # противоречила бы заданному значению.
-    #
-    # Пустое значение любой из двух переменных выключает bootstrap: это способ
-    # отказаться от него, когда учётные записи заводят иначе.
     app_bootstrap_login: str = "admin"
     app_bootstrap_password: str = "admin"
     app_bootstrap_name: str = "Администратор"
@@ -318,6 +407,19 @@ class Settings(BaseSettings):
         return self
 
     @property
+    def bootstrap_enabled(self) -> bool:
+        """Заводить ли первую учётную запись при пустой таблице.
+
+        Пустое значение логина или пароля выключает bootstrap — это способ
+        отказаться от него, когда учётные записи заводят иначе. Инвариант
+        живёт здесь, а не в коде фичи: иначе каждый вызывающий выражал бы его
+        заново и однажды выразил бы по-своему. strip() не украшение: пароль
+        из одного пробела не пуст для bool(), и без него сентинел молча
+        создал бы рабочую учётку с паролем " ".
+        """
+        return bool(self.app_bootstrap_login.strip() and self.app_bootstrap_password.strip())
+
+    @property
     def async_database_url(self) -> str:
         """Адрес для SQLAlchemy с асинхронным драйвером.
 
@@ -329,23 +431,72 @@ class Settings(BaseSettings):
         return f"postgresql+asyncpg://{rest}"
 
 
-# Обязательные поля не имеют значений по умолчанию — mypy этого не знает и
-# требует их аргументами конструктора, хотя pydantic-settings подставит их из
-# окружения. Штатное расхождение строгого mypy и BaseSettings.
-settings = Settings()  # type: ignore[call-arg]
+def describe_validation_error(error: ValidationError) -> str:
+    """Текст ошибки конфигурации — только имена полей и тексты проверок.
+
+    Вынесено отдельной функцией, чтобы это можно было проверить тестом: она
+    и есть та граница, за которую секреты не должны выйти.
+    """
+    lines = [
+        f"  {item['loc'][0] if item['loc'] else '(корень)'}: {item['msg']}"
+        for item in error.errors()
+    ]
+    return (
+        "Переменные окружения заданы неверно:\n"
+        + "\n".join(lines)
+        + f"\nПроверь {ENV_FILE} — образец лежит в .env.example."
+    )
+
+
+def load_settings() -> Settings:
+    """Разбирает окружение или падает, не раскрывая секретов.
+
+    Голый ValidationError сюда выпускать нельзя: pydantic прикладывает к
+    ошибке model-валидатора весь входной словарь, а в нём боевой пароль базы
+    и APP_AUTH_SECRET целиком — независимо от того, какая проверка сработала.
+    Это исключение возникает при старте и с наибольшей вероятностью попадёт
+    в лог или в трекер ошибок.
+
+    `from None` обязателен: без него исходный ValidationError остался бы в
+    цепочке и напечатался бы в traceback вместе со значениями.
+    """
+    try:
+        return Settings()  # type: ignore[call-arg]
+    except ValidationError as error:
+        raise RuntimeError(describe_validation_error(error)) from None
+
+
+settings = load_settings()
 ```
 
-Проверено на pydantic 2.13.5: без `alias_generator` сообщение об ошибке
-называет питоновское имя поля (`app_auth_secret`), а не переменную окружения.
-С ним все три случая — короткий секрет, чужое значение `APP_ENV`, нечисловой
-`COOKIE_SECURE` — печатают имя заглавными, как в `.env`.
+Четыре решения в этом файле проверены на живом pydantic 2.13.5, а не взяты
+из общих соображений:
+
+1. Без `alias_generator` ошибка называет питоновское имя поля
+   (`app_auth_secret`), а не переменную окружения. С ним все случаи —
+   короткий секрет, чужое `APP_ENV`, нечисловой `COOKIE_SECURE` — печатают
+   имя заглавными, как в `.env`.
+2. `extra="ignore"` проглатывает опечатку: `.env` со строкой
+   `APP_ENVV=production` оставляет `app_env="local"` без единого слова.
+   `extra="forbid"` её отвергает. Посторонние переменные окружения при этом
+   не мешают: из `os.environ` собираются только объявленные поля.
+3. `.env` в корне репозитория **не находится**, если процесс запущен из
+   `backend/` — а pm2 на контуре запускает его именно так (`--cwd .../backend`),
+   тогда как провижинер кладёт `.env` в корень. Путь от `__file__` работает
+   при запуске из обоих каталогов.
+4. `e.errors()` содержит боевой пароль базы и `APP_AUTH_SECRET` целиком даже
+   когда упавшая проверка про `COOKIE_SECURE`. Поэтому наружу отдаётся текст,
+   собранный только из имени поля и текста проверки.
 
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_config.py`
-Expected: PASS, 6 passed
+Expected: PASS, 13 passed
 
 - [ ] **Шаг 5: Написать `.env.example` в корне репозитория**
+
+Файл лежит именно в корне, рядом с будущим `.env`: туда же кладёт `.env`
+провижинер на контуре, и оттуда же его читает `ENV_FILE`.
 
 ```dotenv
 # Локальная разработка. На контуре этот файл пишет app-provision.
@@ -365,7 +516,18 @@ APP_BOOTSTRAP_PASSWORD="admin"
 APP_BOOTSTRAP_NAME="Администратор"
 ```
 
-- [ ] **Шаг 6: Коммит**
+- [ ] **Шаг 6: Завести локальный `.env`**
+
+Без него модуль нельзя даже импортировать: `settings` разбирается при
+импорте. Файл в `.gitignore`, в репозиторий не попадает.
+
+```bash
+cp .env.example .env
+python3 -c "import secrets; print(secrets.token_hex(32))"
+# вписать полученное значение в APP_AUTH_SECRET в .env
+```
+
+- [ ] **Шаг 7: Коммит**
 
 ```bash
 git add backend/app/core/config.py backend/tests/unit/test_config.py .env.example
@@ -2620,9 +2782,11 @@ async def ensure_bootstrap_user(session: AsyncSession) -> None:
 
     Пара по умолчанию admin / admin известна всем, у кого есть шаблон,
     поэтому на боевом контуре под ней не работают: заводят свою запись и
-    отключают эту. Пустое значение логина или пароля выключает bootstrap.
+    отключают эту. Условие выключения выражено свойством
+    `settings.bootstrap_enabled`, а не проверкой по месту: инвариант должен
+    жить в одном месте, иначе его однажды выразят по-своему.
     """
-    if not settings.app_bootstrap_login or not settings.app_bootstrap_password:
+    if not settings.bootstrap_enabled:
         return
     existing = (await session.execute(select(User.id).limit(1))).first()
     if existing is not None:
