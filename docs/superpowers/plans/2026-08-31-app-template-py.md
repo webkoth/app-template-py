@@ -1310,6 +1310,14 @@ class TestTotals:
         )
         assert [r.category for r in result] == ["Аренда", "Софт", "Прочее"]
 
+    def test_equal_totals_ordered_by_name(self):
+        # Порядок обязан зависеть только от данных, а не от того, в каком
+        # порядке база вернула строки.
+        first = totals_by_category([("Софт", 500), ("Аренда", 500), ("Услуги", 500)])
+        second = totals_by_category([("Услуги", 500), ("Софт", 500), ("Аренда", 500)])
+        assert [r.category for r in first] == ["Аренда", "Софт", "Услуги"]
+        assert [r.category for r in first] == [r.category for r in second]
+
     def test_share_computed(self):
         result = totals_by_category([("Аренда", 75000), ("Софт", 25000)])
         assert result[0].share == 0.75
@@ -1369,14 +1377,18 @@ def totals_by_category(rows: list[tuple[str, int]]) -> list[CategoryTotal]:
             total_minor=value,
             share=(value / total) if total else 0.0,
         )
-        for category, value in sorted(sums.items(), key=lambda kv: -kv[1])
+        # Разрыв ничьей по названию, а не «как получилось». Без него порядок
+        # категорий с равными суммами определяется порядком строк из базы, и
+        # на экране сводки они переставляются между обновлениями страницы —
+        # выглядит как мерцание, объясняется ничем. Проверено.
+        for category, value in sorted(sums.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
 ```
 
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_expenses.py -v`
-Expected: PASS, 7 passed
+Expected: PASS, 8 passed
 
 - [ ] **Шаг 5: Прогнать все проверки бэкенда**
 
