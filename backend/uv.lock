@@ -67,11 +67,13 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
-    { name = "import-linter" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+]
+lint = [
+    { name = "import-linter" },
 ]
 
 [package.metadata]
@@ -88,12 +90,12 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx", specifier = ">=0.28" },
-    { name = "import-linter", specifier = ">=2.14" },
     { name = "mypy", specifier = ">=2.3" },
     { name = "pytest", specifier = ">=9.1" },
     { name = "pytest-asyncio", specifier = ">=1.4" },
     { name = "ruff", specifier = ">=0.16" },
 ]
+lint = [{ name = "import-linter", specifier = ">=2.14" }]
 
 [[package]]
 name = "ast-serialize"

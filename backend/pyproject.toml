@@ -20,8 +20,14 @@ dev = [
     "pytest>=9.1",
     "pytest-asyncio>=1.4",
     "httpx>=0.28",
-    "import-linter>=2.14",
 ]
+# Отдельная группа, а НЕ dev. `uv sync` без флагов ставит dev по умолчанию, и
+# import-linter утянул бы за собой grimp, у которого нет колеса под cp314 на
+# macOS (есть только под free-threaded cp314t). Установка собирала бы Rust-
+# расширение около двадцати минут — на первом же `uv sync` у нового человека,
+# ещё до того, как он увидит работающее приложение. В отдельной группе эта
+# цена платится один раз при первом `make check` и не мешает установке.
+lint = ["import-linter>=2.14"]
 
 [tool.ruff]
 line-length = 88
@@ -37,8 +43,12 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 [tool.mypy]
 python_version = "3.14"
 strict = true
-# SQLAlchemy отдаёт много динамики; плагин учит mypy читать Mapped[].
-plugins = ["sqlalchemy.ext.mypy.plugin"]
+# Плагина sqlalchemy.ext.mypy здесь нет намеренно. Он писался под старый стиль
+# объявления таблиц (Column плюс отдельная аннотация); для стиля 2.0 с Mapped[]
+# mypy выводит типы сам через dataclass_transform. Проверено: с
+# `--config-file=/dev/null` mypy читает Mapped[str] как str и ловит подстановку
+# str вместо int. Плагин цепляется за внутренний API mypy и ломается при его
+# обновлении — это отказ ради ничего.
 
 [[tool.mypy.overrides]]
 module = "tests.*"
@@ -49,6 +59,13 @@ disallow_untyped_defs = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Оба scope — session, и это не украшение. В tests/conftest.py схема базы
+# создаётся фикстурой со scope="session", а движок общий на весь прогон. При
+# дефолтном function-scope цикла pytest-asyncio даёт либо ScopeMismatch, либо
+# «Task attached to a different loop» — соединение создано в одном цикле, а
+# используется в другом. Диагностируется это плохо, поэтому задаётся сразу.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 addopts = "-q"
 
 [build-system]
