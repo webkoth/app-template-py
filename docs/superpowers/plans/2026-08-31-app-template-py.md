@@ -1043,6 +1043,17 @@ class TestParse:
         assert parse_date_input_value("31.08.2026") is None
         assert parse_date_input_value("") is None
         assert parse_date_input_value("вчера") is None
+        assert parse_date_input_value("2026-13-01") is None
+
+    def test_basic_iso_format_rejected(self):
+        # date.fromisoformat принял бы: с 3.11 он понимает запись без
+        # дефисов. Контракт обещает YYYY-MM-DD, шире принимать незачем.
+        assert parse_date_input_value("20260831") is None
+
+    def test_iso_week_date_rejected(self):
+        # Самый неприятный случай: date.fromisoformat разбирает это в
+        # 29 декабря 2025 года — дату другого года.
+        assert parse_date_input_value("2026-W01-1") is None
 
     def test_midnight_moscow_not_utc(self):
         # Начало суток берётся в московской зоне. Взяв полночь UTC, мы бы
@@ -1082,18 +1093,30 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'app.domain.dates'`
 а не «добавить параметр».
 """
 
+import re
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 MSK = ZoneInfo("Europe/Moscow")
 
+# Ровно YYYY-MM-DD и ничего больше. date.fromisoformat в Python 3.11+
+# принимает заметно шире: "20260831" без дефисов и — что хуже —
+# "2026-W01-1", недельную нумерацию ISO, которая разбирается в 29 декабря
+# 2025 года. Строка, похожая на мусор, молча становится датой другого года.
+# Поле type="date" такого не пришлёт, но API принимает произвольную строку,
+# и контракт обязан совпадать с обещанием docstring.
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
 
 def parse_date_input_value(raw: str) -> datetime | None:
     """Разбирает значение поля type="date" (ISO, YYYY-MM-DD).
 
-    None — строка не является существующей датой. Проверку делает
-    date.fromisoformat: он отвергает 2026-02-31, а не переносит её на март.
+    None — строка не является существующей датой этого формата. Проверку
+    существования делает date.fromisoformat: он отвергает 2026-02-31, а не
+    переносит её на март, как молча делает движок JavaScript.
     """
+    if not _ISO_DATE.fullmatch(raw):
+        return None
     try:
         parsed = date.fromisoformat(raw)
     except ValueError:
@@ -1112,7 +1135,7 @@ def format_date_time(value: datetime) -> str:
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_dates.py -v`
-Expected: PASS, 10 passed
+Expected: PASS, 13 passed
 
 - [ ] **Шаг 5: Коммит**
 
