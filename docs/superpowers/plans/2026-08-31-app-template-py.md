@@ -1018,6 +1018,8 @@ Create `backend/tests/unit/test_dates.py`:
 ```python
 from datetime import UTC, datetime
 
+import pytest
+
 from app.domain.dates import MSK, format_date, format_date_time, parse_date_input_value
 
 
@@ -1076,6 +1078,17 @@ class TestFormat:
         # Из базы значения приходят в UTC. Показывать их надо по Москве.
         v = datetime(2026, 8, 31, 21, 30, tzinfo=UTC)
         assert format_date_time(v) == "01.09.2026 00:30"
+
+    def test_naive_datetime_rejected(self):
+        # Значение без зоны astimezone не отвергает: Python считает его
+        # временем в зоне процесса и молча конвертирует. На машине в Москве
+        # показ верен, на сервере в UTC — съезжает на три часа. Такая
+        # ошибка обнаруживается на контуре и ищется в данных, а не в коде,
+        # поэтому падать надо здесь и громко.
+        with pytest.raises(ValueError):
+            format_date(datetime(2026, 8, 31))
+        with pytest.raises(ValueError):
+            format_date_time(datetime(2026, 8, 31, 12, 0))
 ```
 
 - [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
@@ -1124,18 +1137,39 @@ def parse_date_input_value(raw: str) -> datetime | None:
     return datetime.combine(parsed, time.min, tzinfo=MSK)
 
 
+def _in_moscow(value: datetime) -> datetime:
+    """Переводит значение в московскую зону, отвергая наивное.
+
+    astimezone на datetime без зоны не падает: Python молча считает его
+    временем в зоне процесса. Проверено — один и тот же вызов даёт три
+    разные даты при TZ=Europe/Moscow, UTC и America/New_York.
+
+    Для нас это не теория: машина разработчика в Москве, контур на сервере
+    почти наверняка в UTC. Локально показ верен, на контуре та же запись
+    съезжает на три часа, и расхождение ищут в данных, а не в коде.
+
+    Из базы значения приходят с зоной (TIMESTAMPTZ), поэтому наивное
+    значение здесь означает ошибку в коде, и падать надо громко.
+    """
+    if value.tzinfo is None:
+        raise ValueError(
+            "datetime без часового пояса: показ зависел бы от зоны сервера"
+        )
+    return value.astimezone(MSK)
+
+
 def format_date(value: datetime) -> str:
-    return value.astimezone(MSK).strftime("%d.%m.%Y")
+    return _in_moscow(value).strftime("%d.%m.%Y")
 
 
 def format_date_time(value: datetime) -> str:
-    return value.astimezone(MSK).strftime("%d.%m.%Y %H:%M")
+    return _in_moscow(value).strftime("%d.%m.%Y %H:%M")
 ```
 
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_dates.py -v`
-Expected: PASS, 11 passed
+Expected: PASS, 12 passed
 
 - [ ] **Шаг 5: Коммит**
 
