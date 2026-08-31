@@ -1576,6 +1576,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
 
+# Предел колонки detail — он же предел того, что журнал готов запомнить.
+DETAIL_MAX = 1024
+
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
@@ -1610,7 +1613,16 @@ def write_audit(
     изменением. В эталоне запись в журнал шла отдельным вызовом после
     сохранения — падение процесса между ними оставляло изменение без следа,
     а журнал с дырами доверия не заслуживает.
+
+    Длинный detail обрезается, а не роняет запись. Та же общая транзакция
+    означает, что строка длиннее колонки отменила бы саму мутацию: расход не
+    сохранился бы из-за слишком подробной заметки о нём. Размен плохой, и
+    обрезка тут — единственное разумное поведение. Многоточие в конце
+    оставляется намеренно, чтобы читающий журнал видел неполноту.
     """
+    if len(detail) > DETAIL_MAX:
+        detail = detail[: DETAIL_MAX - 1] + "…"
+
     session.add(
         AuditLog(
             actor=actor,
@@ -1620,6 +1632,57 @@ def write_audit(
             detail=detail,
         )
     )
+```
+
+- [ ] **Шаг 2а: Написать `backend/tests/unit/test_audit.py`**
+
+Единственные тесты в этой задаче, и они про правило, а не про базу:
+настоящая сессия здесь мешала бы, поэтому подставляется запоминающая
+заглушка.
+
+```python
+from app.core.audit import DETAIL_MAX, write_audit
+
+
+class Recorder:
+    """Подставная сессия: write_audit только кладёт объект, больше ничего.
+
+    Настоящая сессия здесь не нужна и мешала бы: проверяется правило, а не
+    работа базы.
+    """
+
+    def __init__(self) -> None:
+        self.added: list[object] = []
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+
+def record(detail: str) -> str:
+    recorder = Recorder()
+    write_audit(recorder, "boss", "create", "Expense", "id-1", detail)  # type: ignore[arg-type]
+    return recorder.added[0].detail  # type: ignore[attr-defined]
+
+
+def test_short_detail_kept_as_is():
+    assert record("Софт, 12000 коп.") == "Софт, 12000 коп."
+
+
+def test_detail_at_limit_kept_whole():
+    assert record("x" * DETAIL_MAX) == "x" * DETAIL_MAX
+
+
+def test_longer_detail_truncated_and_marked():
+    result = record("x" * (DETAIL_MAX + 1))
+    assert len(result) == DETAIL_MAX
+    assert result.endswith("…")
+
+
+def test_truncation_counts_characters_not_bytes():
+    # VARCHAR(1024) в PostgreSQL считает символы: 1024 кириллических знака
+    # занимают 2048 байт и укладываются. Проверено на живой базе.
+    result = record("я" * 5000)
+    assert len(result) == DETAIL_MAX
 ```
 
 - [ ] **Шаг 3: Написать `backend/app/features/users/models.py`**
@@ -1740,10 +1803,17 @@ modules =
 Run: `cd backend && uv run mypy app && uv run --group lint lint-imports --config .importlinter`
 Expected: mypy Success; `Contracts: 2 kept, 0 broken.`
 
+Прогон тестов: `uv run pytest` — ожидается 63 (59 прежних плюс 4 новых).
+
+Докажи мутацией, что тесты на обрезку не пустые: убери из `write_audit`
+две строки с `DETAIL_MAX`, прогони — должны упасть два теста из четырёх.
+Верни как было.
+
 - [ ] **Шаг 7: Коммит**
 
 ```bash
-git add backend/app/core/audit.py backend/app/features/ backend/.importlinter
+git add backend/app/core/audit.py backend/app/features/ backend/.importlinter \
+        backend/tests/unit/test_audit.py
 git commit -m "feat: таблицы пользователей, журнала аудита и расходов"
 ```
 
