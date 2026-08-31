@@ -2212,7 +2212,6 @@ r=8, p=1, 64 байта, соль 16 байт), поэтому строки хе
 UTF-8 у обеих сторон совпадает.
 """
 
-import base64
 import hashlib
 import hmac
 import secrets
@@ -2338,6 +2337,10 @@ Run: `cd backend && uv run pytest tests/unit/test_token.py`
 Expected: FAIL — `ImportError: cannot import name 'AUTH_COOKIE'`
 
 - [ ] **Шаг 3: Дописать в конец `backend/app/core/security.py`**
+
+Вместе с кодом ниже добавь `import base64` в шапку файла. В задаче 12 его
+там нет намеренно: неиспользуемый импорт — это F401, и `make check` был бы
+красным всю предыдущую задачу.
 
 ```python
 AUTH_COOKIE = "app_session"
