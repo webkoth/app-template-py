@@ -23,6 +23,25 @@
 Коммиты — conventional commits, описание по-русски. Коммит в конце каждой
 задачи, не реже.
 
+**Про мутационные проверки.** Некоторые шаги требуют временно сломать
+защиту и убедиться, что падает ровно сторожащий её тест. Перед каждой такой
+мутацией **удаляй `__pycache__`**:
+
+```bash
+find . -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null
+```
+
+Причина не в осторожности. CPython считает кэш байткода годным по паре
+«время изменения с точностью до секунды плюс размер файла». Две мутации,
+дающие файл одного размера в пределах одной секунды, неразличимы для этой
+проверки, и вторая исполняет байткод первой. Выглядит это как успешное
+доказательство: тест падает — просто не от той мутации. Проверено
+воспроизведением; на этом попался и автор плана.
+
+Ещё мелочь оттуда же: `addopts = "-q"` уже стоит в `pyproject.toml`, и свой
+`-q` в командной строке даёт `-qq`, при котором pytest перестаёт печатать
+итоговую строку.
+
 Код в шагах записан для чтения человеком, а не под форматтер. После написания
 файла прогоняй `uv run ruff format .` (бэкенд) или `npx prettier --write`
 (фронтенд) — расстановка переносов и кавычек механическая, спорить с
@@ -2880,8 +2899,8 @@ Expected: PASS, 13 passed
 | Что сделать | Обязан упасть |
 |---|---|
 | убрать `if self._locked_until(marks) > now: return` | `test_bot_cannot_extend_lock_forever` |
-| заменить `excess = len(self._hits) - MAX_KEYS` на `excess = -1` | два теста из `TestMemory` |
-| в `_normalize` вернуть `key` вместо приведённого | `test_case_and_spaces_share_one_bucket` |
+| заменить `excess = len(self._hits) - MAX_KEYS` на `excess = -1` | `test_map_is_bounded` и `test_recent_keys_survive_eviction` |
+| в `_normalize` вернуть `key` вместо приведённого | `test_case_and_spaces_share_one_bucket` и `test_reset_uses_same_normalization` |
 | заменить условие в `__post_init__` на `if False:` | `test_lock_longer_than_window_is_rejected` |
 | `BY_ADDRESS` с `max_attempts=5` | `test_thresholds_differ_for_login_and_address` |
 
@@ -3230,13 +3249,16 @@ Expected: PASS, 10 passed
 
 - [ ] **Шаг 5: Доказать мутациями, что тесты не пустые**
 
+Указано имя теста, а не число падений: число зависит от того, какие ещё
+случаи подаёт набор, и сверять его бесполезно.
+
 | Что сделать | Обязан упасть |
 |---|---|
-| `if not errors:` → `if False:` | два теста |
+| `if not errors:` → `if False:` | `test_empty_error_list_does_not_raise` |
 | убрать снятие маркера (`if False:`) | `test_location_marker_stripped_only_from_head` |
-| вернуть фильтр по значению вместо позиционного | он же плюс `test_plain_validation_error_keeps_field_name` |
-| `_printable` возвращает `text` как есть | два теста |
-| `message = raw` вместо поиска в `_MESSAGES` | два теста |
+| вернуть фильтр по значению вместо позиционного | он же и `test_plain_validation_error_keeps_field_name` |
+| `_printable` возвращает `text` как есть | `test_lone_surrogate_does_not_break_response` |
+| `message = raw` вместо поиска в `_MESSAGES` | `test_pydantic_message_translated` |
 
 - [ ] **Шаг 6: Коммит**
 
