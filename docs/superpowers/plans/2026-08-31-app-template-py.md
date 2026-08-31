@@ -74,8 +74,14 @@ dev = [
     "pytest>=9.1",
     "pytest-asyncio>=1.4",
     "httpx>=0.28",
-    "import-linter>=2.14",
 ]
+# Отдельная группа, а НЕ dev. `uv sync` без флагов ставит dev по умолчанию, и
+# import-linter утянул бы за собой grimp, у которого нет колеса под cp314 на
+# macOS (есть только под free-threaded cp314t). Установка собирала бы Rust-
+# расширение около двадцати минут — на первом же `uv sync` у нового человека,
+# ещё до того, как он увидит работающее приложение. В отдельной группе эта
+# цена платится один раз при первом `make check` и не мешает установке.
+lint = ["import-linter>=2.14"]
 
 [tool.ruff]
 line-length = 88
@@ -91,8 +97,12 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 [tool.mypy]
 python_version = "3.14"
 strict = true
-# SQLAlchemy отдаёт много динамики; плагин учит mypy читать Mapped[].
-plugins = ["sqlalchemy.ext.mypy.plugin"]
+# Плагина sqlalchemy.ext.mypy здесь нет намеренно. Он писался под старый стиль
+# объявления таблиц (Column плюс отдельная аннотация); для стиля 2.0 с Mapped[]
+# mypy выводит типы сам через dataclass_transform. Проверено: с
+# `--config-file=/dev/null` mypy читает Mapped[str] как str и ловит подстановку
+# str вместо int. Плагин цепляется за внутренний API mypy и ломается при его
+# обновлении — это отказ ради ничего.
 
 [[tool.mypy.overrides]]
 module = "tests.*"
@@ -103,6 +113,13 @@ disallow_untyped_defs = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Оба scope — session, и это не украшение. В tests/conftest.py схема базы
+# создаётся фикстурой со scope="session", а движок общий на весь прогон. При
+# дефолтном function-scope цикла pytest-asyncio даёт либо ScopeMismatch, либо
+# «Task attached to a different loop» — соединение создано в одном цикле, а
+# используется в другом. Диагностируется это плохо, поэтому задаётся сразу.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 addopts = "-q"
 
 [build-system]
@@ -383,7 +400,7 @@ forbidden_modules =
 
 - [ ] **Шаг 2: Проверить, что конфиг читается**
 
-Run: `cd backend && uv run lint-imports --config .importlinter`
+Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
 Expected: контракты проходят (модулей пока нет — это норма, они появятся
 дальше; команда не должна падать с ошибкой разбора конфига).
 
@@ -425,7 +442,7 @@ check-backend:
 	cd backend && uv run ruff format --check .
 	cd backend && uv run ruff check .
 	cd backend && uv run mypy app
-	cd backend && uv run lint-imports --config .importlinter
+	cd backend && uv run --group lint lint-imports --config .importlinter
 	cd backend && uv run pytest
 
 check-frontend:
@@ -1234,7 +1251,7 @@ class Expense(Base):
 
 - [ ] **Шаг 5: Проверить типы и границы**
 
-Run: `cd backend && uv run mypy app && uv run lint-imports --config .importlinter`
+Run: `cd backend && uv run mypy app && uv run --group lint lint-imports --config .importlinter`
 Expected: mypy Success; все контракты Kept.
 
 - [ ] **Шаг 6: Коммит**
@@ -2068,7 +2085,7 @@ def require_role(minimum: Role):  # noqa: ANN201 — возвращает зав
 
 - [ ] **Шаг 2: Проверить типы и границы**
 
-Run: `cd backend && uv run mypy app && uv run lint-imports --config .importlinter`
+Run: `cd backend && uv run mypy app && uv run --group lint lint-imports --config .importlinter`
 Expected: mypy Success; контракты Kept.
 
 - [ ] **Шаг 3: Коммит**
@@ -3554,7 +3571,7 @@ Expected: PASS — все тесты фаз 1–4 зелёные (около 80)
 
 - [ ] **Шаг 7: Проверить границы модулей**
 
-Run: `cd backend && uv run lint-imports --config .importlinter`
+Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
 Expected: все контракты Kept.
 
 - [ ] **Шаг 8: Поднять приложение руками**
@@ -5412,7 +5429,9 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - run: uv sync --frozen
+      # --group lint ставит import-linter, которого нет в dev по умолчанию.
+      # На Linux у grimp есть готовое колесо, поэтому здесь это дёшево.
+      - run: uv sync --frozen --group lint
         working-directory: backend
 
       - run: uv run ruff format --check .
@@ -5421,7 +5440,7 @@ jobs:
         working-directory: backend
       - run: uv run mypy app
         working-directory: backend
-      - run: uv run lint-imports --config .importlinter
+      - run: uv run --group lint lint-imports --config .importlinter
         working-directory: backend
 
       # Схема накатывается до тестов: API-тесты идут в настоящую базу.
@@ -5513,7 +5532,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: uv sync --frozen
+      - run: uv sync --frozen --group lint
         working-directory: backend
       - run: uv run ruff format --check .
         working-directory: backend
@@ -5521,7 +5540,7 @@ jobs:
         working-directory: backend
       - run: uv run mypy app
         working-directory: backend
-      - run: uv run lint-imports --config .importlinter
+      - run: uv run --group lint lint-imports --config .importlinter
         working-directory: backend
       - run: uv run alembic upgrade head
         working-directory: backend
@@ -5978,6 +5997,14 @@ git diff <точка-отката>..origin/main --stat -- backend/alembic/versio
 - PostgreSQL 18
 
 Готовность показывает `node scripts/onboarding-check.mjs`.
+
+**Про первый `make check` на macOS.** Он поставит `import-linter`, а тот тянет
+`grimp`, у которого нет готового колеса под Python 3.14 на macOS: под обычный
+интерпретатор колёс нет, есть только под free-threaded сборку. Установка
+скачает тулчейн Rust и соберёт расширение — это порядка двадцати минут, один
+раз на машину. Команда в этот момент выглядит зависшей, но она работает; не
+прерывай её. Результат кэшируется, повторные запуски мгновенные. На Linux и в
+CI колесо есть, и ничего этого не происходит.
 ```
 
 и раздел первого запуска:
@@ -6405,7 +6432,7 @@ Expected: обе команды проходят.
 - [ ] **Шаг 4: Проверить, что контракты границ держатся**
 
 ```bash
-cd backend && uv run lint-imports --config .importlinter
+cd backend && uv run --group lint lint-imports --config .importlinter
 ```
 
 Expected: три контракта Kept.
