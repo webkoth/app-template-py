@@ -68,7 +68,16 @@ dependencies = [
     "uvicorn[standard]>=0.52",
     "pydantic>=2.13",
     "pydantic-settings>=2.15",
-    "sqlalchemy>=2.0.52",
+    # [asyncio] обязателен, и это не украшение. Он тянет greenlet, без
+    # которого падает любая операция через async-сессию. Само по себе
+    # SQLAlchemy объявляет greenlet условно, перечисляя архитектуры списком:
+    # там есть aarch64 (Linux ARM), но нет arm64 — а это ровно то, что
+    # возвращает platform.machine() на маке с Apple Silicon. То есть на
+    # боевом Linux всё работает, а у нового человека на маке шаблон
+    # разваливается при первом обращении к базе, сообщением
+    # «the greenlet library is required», не указывающим ни на
+    # архитектуру, ни на этот файл. Проверено на обеих ветках.
+    "sqlalchemy[asyncio]>=2.0.52",
     "asyncpg>=0.31",
     "alembic>=1.19",
 ]
@@ -1827,6 +1836,11 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    # Движок асинхронный, то есть Alembic ходит в базу тем же asyncpg, что
+    # и приложение. Синхронный драйвер (psycopg) здесь не нужен и в
+    # зависимостях его нет намеренно: вторая библиотека доступа к базе —
+    # это второй набор различий в поведении, который однажды придётся
+    # разбирать.
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
