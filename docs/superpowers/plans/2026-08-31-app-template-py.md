@@ -23,6 +23,12 @@
 Коммиты — conventional commits, описание по-русски. Коммит в конце каждой
 задачи, не реже.
 
+Код в шагах записан для чтения человеком, а не под форматтер. После написания
+файла прогоняй `uv run ruff format .` (бэкенд) или `npx prettier --write`
+(фронтенд) — расстановка переносов и кавычек механическая, спорить с
+форматтером незачем. Смысл кода при этом меняться не должен: если форматтер
+хочет большего, чем переносы, — это повод остановиться и посмотреть.
+
 ---
 
 ## Фаза 0. Каркас репозитория
@@ -93,6 +99,11 @@ target-version = "py314"
 # RUF — правила самого ruff. ASYNC здесь не украшение: один synchronous вызов
 # внутри обработчика блокирует весь event loop, а значит и всех пользователей.
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+# RUF001-003 ловят кириллицу как символ, «подозрительно похожий» на латиницу.
+# Комментарии, docstring и тексты для людей здесь по-русски намеренно, так
+# что это ложное срабатывание почти на каждой строке. Правило защищает от
+# омоглифов в чужом коде; здесь оно только шумит.
+ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.mypy]
 python_version = "3.14"
@@ -214,12 +225,18 @@ def test_database_url_must_be_postgres():
 
 def test_production_requires_secure_cookie():
     with pytest.raises(ValidationError) as e:
-        Settings(_env_file=None, **{**BASE, "APP_ENV": "production", "COOKIE_SECURE": "false"})
+        Settings(
+            _env_file=None,
+            **{**BASE, "APP_ENV": "production", "COOKIE_SECURE": "false"},
+        )
     assert "Secure" in str(e.value)
 
 
 def test_production_with_secure_cookie_is_valid():
-    s = Settings(_env_file=None, **{**BASE, "APP_ENV": "production", "COOKIE_SECURE": "true"})
+    s = Settings(
+        _env_file=None,
+        **{**BASE, "APP_ENV": "production", "COOKIE_SECURE": "true"},
+    )
     assert s.cookie_secure is True
 
 
@@ -260,6 +277,13 @@ class Settings(BaseSettings):
         # и падать из-за них приложение не должно.
         extra="ignore",
         case_sensitive=False,
+        # Имена полей в ошибках валидации — заглавными, то есть ровно так, как
+        # переменная называется в .env. Без этого pydantic пишет питоновское
+        # имя (app_auth_secret), и человек ищет в .env строку, которой там нет.
+        # populate_by_name оставляет возможность создать Settings и по
+        # питоновскому имени — этим пользуются тесты.
+        alias_generator=str.upper,
+        populate_by_name=True,
     )
 
     database_url: str = Field(description="Адрес PostgreSQL")
@@ -301,15 +325,20 @@ class Settings(BaseSettings):
         и psql. Драйвер подставляется здесь, чтобы общий app-provision,
         которым пользуется и TS-шаблон, остался нетронутым.
         """
-        scheme, rest = self.database_url.split("://", 1)
+        _, rest = self.database_url.split("://", 1)
         return f"postgresql+asyncpg://{rest}"
 
 
-settings = Settings()
+# Обязательные поля не имеют значений по умолчанию — mypy этого не знает и
+# требует их аргументами конструктора, хотя pydantic-settings подставит их из
+# окружения. Штатное расхождение строгого mypy и BaseSettings.
+settings = Settings()  # type: ignore[call-arg]
 ```
 
-Поле `app_auth_secret` с `min_length=32` даёт сообщение, где упомянуто имя
-переменной, потому что pydantic печатает его в ошибке валидации.
+Проверено на pydantic 2.13.5: без `alias_generator` сообщение об ошибке
+называет питоновское имя поля (`app_auth_secret`), а не переменную окружения.
+С ним все три случая — короткий секрет, чужое значение `APP_ENV`, нечисловой
+`COOKIE_SECURE` — печатают имя заглавными, как в `.env`.
 
 - [ ] **Шаг 4: Запустить тест**
 
