@@ -10,9 +10,11 @@ r=8, p=1, 64 байта, соль 16 байт), поэтому строки хе
 UTF-8 у обеих сторон совпадает.
 """
 
+import base64
 import hashlib
 import hmac
 import secrets
+import time
 
 SCRYPT_N = 16384
 SCRYPT_R = 8
@@ -67,3 +69,71 @@ def verify_password(password: str, stored: str) -> bool:
     # Сравнение за постоянное время: обычное == выходит на первом
     # несовпавшем байте, и по времени ответа хеш подбирается побайтово.
     return hmac.compare_digest(digest, expected)
+
+
+AUTH_COOKIE = "app_session"
+_SEPARATOR = "\n"
+
+# Срок жизни токена. Проверяется на сервере, а не только сроком куки:
+# max_age у куки — просьба к браузеру, и она ничего не значит для того, кто
+# записал её значение и предъявляет его напрямую. Без этой проверки
+# перехваченный токен действует вечно, потому что подпись у него остаётся
+# верной навсегда.
+SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
+
+def _b64encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _b64decode(raw: str) -> bytes:
+    return base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+
+
+def sign_session_token(login: str, issued_at_ms: int, secret: str) -> str:
+    """Подписанный токен сессии: <payload>.<подпись>.
+
+    Токен несёт логин и время выдачи, но не роль: роль читается из базы на
+    каждом запросе, поэтому её смена действует немедленно.
+    """
+    payload = _b64encode(f"{login}{_SEPARATOR}{issued_at_ms}".encode())
+    signature = _b64encode(
+        hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest()
+    )
+    return f"{payload}.{signature}"
+
+
+def verify_session_token(
+    token: str | None, secret: str, now_ms: int | None = None
+) -> tuple[str, int] | None:
+    """Проверяет подпись и срок, возвращает (логин, время выдачи) или None.
+
+    Здесь подпись, форма и срок. Блокировку, роль и отзыв сессии проверяет
+    слой доступа: у отозванной куки подпись тоже остаётся верной.
+    """
+    if not token or token.count(".") != 1:
+        return None
+    payload, signature = token.split(".")
+    expected = _b64encode(
+        hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest()
+    )
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        login, issued_raw = _b64decode(payload).decode().split(_SEPARATOR)
+        issued_at_ms = int(issued_raw)
+    # Одного ValueError хватает на все три отказа разбора: и binascii.Error
+    # (битый base64), и UnicodeDecodeError (не UTF-8 внутри), и отказ int() —
+    # его подклассы. Перечислять их отдельно нельзя: binascii виден в base64
+    # только в рантайме, в стабах его нет, и mypy валит проверку.
+    except ValueError:
+        return None
+
+    # Время впрыскивается ради тестов: иначе проверку срока пришлось бы
+    # ждать неделю.
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    if now_ms - issued_at_ms > SESSION_MAX_AGE_SECONDS * 1000:
+        return None
+
+    return login, issued_at_ms
