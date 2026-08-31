@@ -23,7 +23,7 @@ def parse_money_to_minor(raw: str) -> int | None:
     приведение к числу здесь не работает: float("12,34") падает, а
     float("12.345") молча теряет копейку.
     """
-    s = raw.strip().replace("\xa0", "").replace(" ", "").replace(",", ".")
+    s = raw.strip().replace(" ", "").replace("\xa0", "").replace(",", ".")
     if not _NUMBER.fullmatch(s):
         return None
     try:
