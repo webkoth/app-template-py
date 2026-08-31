@@ -18,10 +18,10 @@ def test_cookie_name_is_stable():
 
 
 def test_roundtrip():
-    # Единственный тест, где now_ms не передан: срок сверяется с реальными
-    # часами. Поэтому и время выдачи берётся с них же. С прибитой гвоздями
-    # константой тест был бы зелёным только на неделе, когда он написан, а
-    # дальше падал бы по сроку — на исправном коде.
+    # Время берётся настоящее, а не константа: это единственный тест, где
+    # now_ms не передан, то есть единственное покрытие ветки с системными
+    # часами. С константой он был бы зелёным ровно ту неделю, когда его
+    # написали, а потом падал бы по сроку на исправном коде.
     issued = int(time.time() * 1000)
     token = sign_session_token("admin", issued, SECRET)
     assert verify_session_token(token, SECRET) == ("admin", issued)
@@ -45,6 +45,16 @@ def test_malformed_input_rejected():
     assert verify_session_token("безточки", SECRET) is None
     assert verify_session_token("a.b.c", SECRET) is None
     assert verify_session_token("!!!.!!!", SECRET) is None
+
+
+def test_non_ascii_cookie_rejected_without_raising():
+    # Кука с байтом от 0x80 приходит декодированной как latin-1 и даёт
+    # не-ASCII строку. Форму «одна точка» она проходит, а сравнение подписи
+    # на таких строках бросает TypeError вместо False — то есть мусорная
+    # кука роняла бы вход пятисоткой. Байты ниже — то, что реально приходит
+    # в заголовке.
+    forged = b"\xd0\xb0.\xd0\xb1".decode("latin-1")
+    assert verify_session_token(forged, SECRET) is None
 
 
 def test_expired_token_rejected():

@@ -111,7 +111,12 @@ def verify_session_token(
     Здесь подпись, форма и срок. Блокировку, роль и отзыв сессии проверяет
     слой доступа: у отозванной куки подпись тоже остаётся верной.
     """
-    if not token or token.count(".") != 1:
+    # isascii обязателен. Заголовки приходят декодированными как latin-1,
+    # поэтому кука с любым байтом от 0x80 даёт строку с не-ASCII символами.
+    # Форму «одна точка» она при этом проходит, а hmac.compare_digest на
+    # таких строках не возвращает False, а бросает TypeError — то есть
+    # мусорная кука давала бы пятисотку вместо отказа входа. Проверено.
+    if not token or token.count(".") != 1 or not token.isascii():
         return None
     payload, signature = token.split(".")
     expected = _b64encode(
@@ -122,11 +127,11 @@ def verify_session_token(
     try:
         login, issued_raw = _b64decode(payload).decode().split(_SEPARATOR)
         issued_at_ms = int(issued_raw)
-    # Одного ValueError хватает на все три отказа разбора: и binascii.Error
-    # (битый base64), и UnicodeDecodeError (не UTF-8 внутри), и отказ int() —
-    # его подклассы. Перечислять их отдельно нельзя: binascii виден в base64
-    # только в рантайме, в стабах его нет, и mypy валит проверку.
     except ValueError:
+        # Один ValueError покрывает всё, что здесь может случиться:
+        # binascii.Error и UnicodeDecodeError — его подклассы. Перечислять
+        # их поимённо не только лишнее, но и невозможно: base64.binascii
+        # существует в рантайме, а в описании типов его нет, и mypy падает.
         return None
 
     # Время впрыскивается ради тестов: иначе проверку срока пришлось бы
