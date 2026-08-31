@@ -2520,9 +2520,10 @@ git commit -m "feat: подпись и проверка токена сесси�
 
 ### Задача 14: Ограничение попыток входа
 
-Единственная защита от подбора пароля. Устройство взято из
-`app-template-ts` — не ради единообразия, а потому что там оно уже пережило
-три ошибки, каждая из которых превращала защиту в отказ в обслуживании.
+Единственная защита от подбора пароля — и единственное место, откуда можно
+запереть законного пользователя. Ошибка в любую сторону дорога, поэтому
+устройство взято из `app-template-ts`, где оно уже пережило три ошибки. Ещё
+три места исправлены против эталона по замерам — они ниже.
 
 **Files:**
 - Create: `backend/app/core/rate_limit.py`
@@ -2538,7 +2539,8 @@ import pytest
 from app.core.rate_limit import (
     BY_ADDRESS,
     BY_LOGIN,
-    SWEEP_AT,
+    MAX_KEYS,
+    Limit,
     RateLimiter,
 )
 
@@ -2627,24 +2629,51 @@ class TestLock:
 
 
 class TestMemory:
-    def test_stale_keys_are_swept(self, clock):
-        # Без чистки карта растёт неограниченно: каждый выдуманный логин
-        # остаётся в памяти навсегда, и миллион попыток с разными логинами
-        # исчерпывает её.
+    def test_map_is_bounded(self, clock):
+        # Без потолка карта растёт неограниченно: каждый выдуманный логин
+        # остаётся в памяти навсегда.
         limiter = RateLimiter(BY_LOGIN, now=clock)
-        for i in range(SWEEP_AT + 100):
+        for i in range(MAX_KEYS + 500):
             limiter.register_failure(f"логин{i}")
-        clock.advance(BY_LOGIN.window_seconds + 1)
-        limiter.register_failure("свежий")
+        assert limiter.size() == MAX_KEYS
+
+    def test_recent_keys_survive_eviction(self, clock):
+        # Вытесняются самые давние, а не случайные: иначе защита снималась
+        # бы ровно с того, кого сейчас перебирают.
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        limiter.register_failure("первый")
+        for i in range(MAX_KEYS + 100):
+            limiter.register_failure(f"логин{i}")
+        limiter.register_failure("последний")
+        assert limiter.retry_after("последний") == 0
+        assert limiter.size() == MAX_KEYS
+
+
+class TestKeyNormalization:
+    def test_case_and_spaces_share_one_bucket(self, clock):
+        # Без приведения `admin`, `Admin` и `admin ` — три разные корзины, и
+        # пятибуквенный логин даёт 32 корзины только за счёт регистра, то
+        # есть 160 попыток вместо пяти.
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        for key in ("admin", "Admin", "ADMIN", " admin", "admin "):
+            limiter.register_failure(key)
+        assert limiter.retry_after("admin") > 0
         assert limiter.size() == 1
 
-    def test_fresh_keys_survive_sweep(self, clock):
-        # Чистка выбрасывает только протухшее. Иначе она бы снимала защиту
-        # ровно тогда, когда та нужнее всего — под массовым перебором.
+    def test_reset_uses_same_normalization(self, clock):
         limiter = RateLimiter(BY_LOGIN, now=clock)
-        for i in range(SWEEP_AT + 100):
-            limiter.register_failure(f"логин{i}")
-        assert limiter.size() == SWEEP_AT + 100
+        for _ in range(BY_LOGIN.max_attempts):
+            limiter.register_failure("Admin")
+        limiter.reset("admin")
+        assert limiter.retry_after("ADMIN") == 0
+
+
+def test_lock_longer_than_window_is_rejected():
+    # Такая настройка молча не работает: отметки выбрасываются по окну, и
+    # блокировка снимается вместе с ними. Ручка, крутящаяся только вниз,
+    # хуже отсутствующей.
+    with pytest.raises(ValueError):
+        Limit(max_attempts=5, window_seconds=60, lock_seconds=120)
 ```
 
 - [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
@@ -2655,6 +2684,15 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'app.core.rate_limit'`
 - [ ] **Шаг 3: Написать `backend/app/core/rate_limit.py`**
 
 ```python
+"""Ограничение попыток входа.
+
+Единственная защита от подбора пароля — и единственное место, откуда можно
+запереть законного пользователя. Ошибка в любую сторону дорога.
+
+ИЗВЕСТНЫЙ ДОЛГ: счётчики живут в памяти процесса, перезапуск их обнуляет.
+Пока воркер один — это и есть счётчик контура.
+"""
+
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -2666,17 +2704,63 @@ class Limit:
     window_seconds: float
     lock_seconds: float
 
+    def __post_init__(self) -> None:
+        # Блокировка длиннее окна — мёртвая настройка: отметки старше окна
+        # выбрасываются, и блокировка снимается вместе с ними, сколько бы ни
+        # было указано. Ручка, которая молча крутится только вниз, хуже
+        # отсутствующей: её выставят и будут считать, что она работает.
+        if self.lock_seconds > self.window_seconds:
+            raise ValueError(
+                "lock_seconds не может превышать window_seconds: "
+                "отметки выбрасываются по окну, и блокировка снимается с ними"
+            )
+
 
 BY_LOGIN = Limit(max_attempts=5, window_seconds=15 * 60, lock_seconds=15 * 60)
 BY_ADDRESS = Limit(max_attempts=30, window_seconds=15 * 60, lock_seconds=15 * 60)
-SWEEP_AT = 10_000
+
+# Потолок числа ключей. При 148 байтах на ключ это около 14 МиБ — цена,
+# которую контур платит за защиту от перебора по выдуманным логинам.
+#
+# Раньше здесь была полная чистка карты при превышении порога, как в
+# app-template-ts. Она оказалась плохим разменом: память и так не была
+# проблемой (миллион ключей — 151 МиБ), а чистка проходила по всем ключам на
+# каждой неудачной попытке, потому что под живым перебором все ключи свежие
+# и выбрасывать нечего. Замерено: налить 20 000 ключей — 13,7 с процессора
+# против 0,01 с, один вызов потом — 1954 мкс против 0,3 мкс. То есть защита
+# от перебора превращалась в усилитель нагрузки: атакующий тратил один
+# запрос, сервер — миллисекунды счёта.
+MAX_KEYS = 100_000
 
 
 class RateLimiter:
+    """Скользящее окно неудачных попыток по ключу.
+
+    Ключ — либо логин, либо адрес. Оба ограничиваются отдельно: по логину,
+    чтобы не подбирали пароль к конкретной учётной записи, по адресу — чтобы
+    не перебирали логины с одной машины.
+    """
+
     def __init__(self, limit: Limit, now: Callable[[], float] = time.monotonic) -> None:
+        # Часы обязаны быть монотонными. При time.time скачок часов назад
+        # растягивает блокировку: отметка из «будущего» не выпадает из окна,
+        # и человек оказывается заперт на разницу хода.
         self._limit = limit
         self._now = now
         self._hits: dict[str, list[float]] = {}
+
+    @staticmethod
+    def _normalize(key: str) -> str:
+        """Приводит ключ к одной форме.
+
+        Без этого `admin`, `Admin` и `admin ` — три разные корзины, и
+        пятибуквенный логин даёт 32 корзины только за счёт регистра, то есть
+        160 попыток вместо пяти. Приведение строго сужает бюджет, новых
+        путей для запирания чужой учётной записи не открывает: запереть
+        `admin`, ошибаясь в `ADMIN`, ровно так же можно было, ошибаясь в
+        самом `admin`.
+        """
+        return key.strip().casefold()
 
     def _fresh(self, key: str, now: float) -> list[float]:
         kept = [
@@ -2693,51 +2777,71 @@ class RateLimiter:
             return 0.0
         return marks[len(marks) - self._limit.max_attempts] + self._limit.lock_seconds
 
-    def _sweep(self, now: float) -> None:
-        if len(self._hits) <= SWEEP_AT:
+    def _evict_overflow(self) -> None:
+        excess = len(self._hits) - MAX_KEYS
+        if excess <= 0:
             return
-        for key in list(self._hits):
-            self._fresh(key, now)
+        # Словарь хранит порядок вставки, поэтому первые ключи — самые
+        # давние. Вытесняются они, а не случайные: у давнего ключа больше
+        # шансов оказаться протухшим.
+        for stale in list(self._hits)[:excess]:
+            del self._hits[stale]
 
     def retry_after(self, key: str) -> float:
+        """Сколько секунд ещё ждать. 0 — попытка допустима."""
         now = self._now()
-        until = self._locked_until(self._fresh(key, now))
+        until = self._locked_until(self._fresh(self._normalize(key), now))
         return until - now if until > now else 0.0
 
     def register_failure(self, key: str) -> None:
         now = self._now()
-        marks = self._fresh(key, now)
+        normalized = self._normalize(key)
+        marks = self._fresh(normalized, now)
+        # Попытка во время блокировки не записывается: иначе бот продлевает
+        # её бесконечно и защита превращается в отказ в обслуживании против
+        # того, кого защищает.
         if self._locked_until(marks) > now:
             return
         marks.append(now)
-        self._hits[key] = marks
-        self._sweep(now)
+        self._hits[normalized] = marks
+        self._evict_overflow()
 
     def reset(self, key: str) -> None:
-        self._hits.pop(key, None)
+        self._hits.pop(self._normalize(key), None)
 
     def size(self) -> int:
         return len(self._hits)
+
+
+login_limiter = RateLimiter(BY_LOGIN)
+address_limiter = RateLimiter(BY_ADDRESS)
 ```
 
-Три решения здесь не косметические, и каждое проверено воспроизведением
-дефекта на упрощённой версии.
+Шесть решений здесь не косметические. Три взяты из эталона, три исправлены
+против него — все шесть проверены воспроизведением.
 
-**Два разных порога.** По логину строго (5), по адресу мягко (30). За одним
-адресом стоит офис или VPN: при общем пороге пять человек, каждый по разу
-опечатавшийся, оставляют без входа шестого. Воспроизведено.
+**Из эталона.** Два разных порога (5 и 30): за одним адресом стоит офис или
+VPN, и общий порог означал бы «один человек трижды опечатался — все
+остались без входа». Неудача во время блокировки не записывается: иначе
+бот, стучащий раз в минуту, держит человека запертым бесконечно. Отметки
+старше окна выбрасываются при обращении к ключу — отдельной чистки по
+расписанию нет.
 
-**Неудача во время блокировки не записывается.** Иначе бот, стучащий раз в
-минуту, держит человека запертым бесконечно — скользящее окно никогда не
-пустеет, и защита от подбора превращается в отказ в обслуживании против
-того, кого защищает. С этой строкой блокировка истекает через 15 минут
-независимо от бота.
+**Против эталона.** Вместо полной чистки карты — потолок числа ключей с
+вытеснением самых давних. Чистка была плохим разменом: память и так не была
+проблемой (миллион ключей — 151 МиБ), а проходила она по всем ключам на
+каждой неудачной попытке, потому что под живым перебором все ключи свежие и
+выбрасывать нечего. Замерено: налить 20 000 ключей — 13,7 с процессорного
+времени против 0,01 с, один вызов после этого — 1954 мкс против 0,3 мкс.
+Защита от перебора превращалась в усилитель нагрузки.
 
-**Чистка при `SWEEP_AT` ключей.** Без неё карта растёт неограниченно:
-каждый выдуманный логин остаётся в памяти навсегда. Проверено — 50 000
-разных логинов дают 50 000 записей, ни одна не освобождается. Чистка
-выбрасывает только протухшее, поэтому не снимает защиту под массовым
-перебором.
+Ключ приводится к одной форме. Без этого `admin`, `Admin` и `admin ` — три
+разные корзины, и пятибуквенный логин даёт 32 корзины только за счёт
+регистра, то есть 160 попыток вместо пяти.
+
+`Limit` отвергает настройку, где блокировка длиннее окна: такая молча не
+работает — отметки выбрасываются по окну, и блокировка снимается вместе с
+ними. Ручка, крутящаяся только вниз, хуже отсутствующей.
 
 **Известный долг остаётся:** счётчики живут в памяти процесса, перезапуск
 их обнуляет. Пока воркер один — это и есть счётчик контура.
@@ -2745,18 +2849,20 @@ class RateLimiter:
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_rate_limit.py -v`
-Expected: PASS, 10 passed
+Expected: PASS, 13 passed
 
 - [ ] **Шаг 5: Доказать мутациями, что тесты не пустые**
 
-Каждая мутация обязана уронить ровно один тест — тот, что её сторожит.
-После каждой возвращай файл и проверяй `git status`.
+Каждая обязана уронить указанные тесты. После каждой возвращай файл и
+проверяй `git status`.
 
-| Что убрать | Обязан упасть |
+| Что сделать | Обязан упасть |
 |---|---|
-| `if self._locked_until(marks) > now: return` в `register_failure` | `test_bot_cannot_extend_lock_forever` |
-| вызов `self._sweep(now)` | `test_stale_keys_are_swept` |
-| `max_attempts=30` у `BY_ADDRESS` заменить на `5` | `test_thresholds_differ_for_login_and_address` |
+| убрать `if self._locked_until(marks) > now: return` | `test_bot_cannot_extend_lock_forever` |
+| заменить `excess = len(self._hits) - MAX_KEYS` на `excess = -1` | два теста из `TestMemory` |
+| в `_normalize` вернуть `key` вместо приведённого | `test_case_and_spaces_share_one_bucket` |
+| заменить условие в `__post_init__` на `if False:` | `test_lock_longer_than_window_is_rejected` |
+| `BY_ADDRESS` с `max_attempts=5` | `test_thresholds_differ_for_login_and_address` |
 
 - [ ] **Шаг 6: Коммит**
 
