@@ -3624,6 +3624,15 @@ async def authenticate(
         await finish()
         raise RuleViolation(TOO_MANY.format(minutes=math.ceil(wait / 60)))
 
+    # Бюджет занимается ДО дорогой проверки, а не после неё. Между
+    # retry_after и register_failure стоит await на scrypt, и за это время
+    # цикл событий успевает пропустить в ворота все ждущие запросы: сорок
+    # одновременных попыток дают сорок проверок пароля при пределе пять.
+    # Замерено ревью. Успешный вход счётчик обнуляет, так что честного
+    # пользователя это не задевает.
+    login_limiter.register_failure(login)
+    address_limiter.register_failure(client_ip)
+
     user = (
         await session.execute(select(User).where(User.login == login))
     ).scalar_one_or_none()
@@ -3641,8 +3650,6 @@ async def authenticate(
         and await asyncio.to_thread(verify_password, password, user.password_hash)
     )
     if not ok or user is None:
-        login_limiter.register_failure(login)
-        address_limiter.register_failure(client_ip)
         await finish()
         raise RuleViolation(DENIED)
 
