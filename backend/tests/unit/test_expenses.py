@@ -1,3 +1,5 @@
+import pytest
+
 from app.domain.expenses import CATEGORIES, CategoryTotal, totals_by_category
 
 
@@ -38,7 +40,23 @@ class TestTotals:
         assert result[1].share == 0.25
 
     def test_zero_total_gives_zero_shares(self):
-        # Деление на ноль: суммы могут в принципе взаимно погаситься.
-        # Без этой ветки экран сводки падал бы на пустяке.
-        result = totals_by_category([("Софт", 100), ("Аренда", -100)])
-        assert all(r.share == 0.0 for r in result)
+        # Деление на ноль: все суммы могут оказаться нулевыми. Без этой
+        # ветки экран сводки падал бы на пустяке.
+        #
+        # Сравнение со всем списком, а не `all(r.share == 0 for r in ...)`:
+        # такая проверка истинна и на пустом списке, поэтому не заметила бы
+        # реализацию, которая при нулевом итоге просто возвращает ничего.
+        # Проверено мутацией — не заметила.
+        assert totals_by_category([("Софт", 0), ("Аренда", 0)]) == [
+            CategoryTotal(category="Аренда", total_minor=0, share=0.0),
+            CategoryTotal(category="Софт", total_minor=0, share=0.0),
+        ]
+
+    def test_negative_amount_rejected(self):
+        # Доля от знакопеременного набора перестаёт быть долей: при суммах
+        # −5000 и 10000 получаются доли −100 % и 200 %. Коварство в том, что
+        # сумма долей при этом остаётся ровно единицей, и проверка «доли
+        # сходятся» такую картину пропускает, а круговая диаграмма рисует
+        # сектор в 3600 градусов.
+        with pytest.raises(ValueError):
+            totals_by_category([("Софт", -5000), ("Аренда", 10000)])
