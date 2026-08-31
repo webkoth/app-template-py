@@ -15,4 +15,6 @@ forbidden_modules =
     app.core
     app.features
     sqlalchemy
+    asyncpg
+    alembic
     fastapi
