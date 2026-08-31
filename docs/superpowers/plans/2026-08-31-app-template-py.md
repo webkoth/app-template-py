@@ -3451,8 +3451,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import get_session
 from app.core.security import AUTH_COOKIE, verify_session_token
-from app.domain.roles import Role, has_rank
 from app.core.users import User, UserStatus
+from app.domain.roles import Role, has_rank
 
 logger = logging.getLogger(__name__)
 
@@ -5127,6 +5127,9 @@ Expected: PASS — все тесты фаз 1–4 зелёные (около 80)
 
 Все `router.py` теперь существуют. Дописать в `backend/.importlinter`:
 
+Модель учётных записей указана отдельно: после переезда в `core` она уже не
+в фиче, но запрет «роутер не ходит в модели мимо сервиса» касается и её.
+
 ```ini
 [importlinter:contract:router-goes-through-service]
 name = router не ходит в модели мимо service
@@ -5137,6 +5140,7 @@ source_modules =
     app.features.expenses.router
 forbidden_modules =
     app.features.expenses.models
+    app.core.users
 ```
 
 - [ ] **Шаг 8: Проверить границы модулей**
