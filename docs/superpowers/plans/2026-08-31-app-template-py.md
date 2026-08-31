@@ -114,6 +114,14 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 # омоглифов в чужом коде; здесь оно только шумит.
 ignore = ["RUF001", "RUF002", "RUF003"]
 
+[tool.ruff.lint.isort]
+# Каталог backend/alembic превращает внешний пакет alembic в «свой»: ruff
+# определяет первую сторону по именам каталогов рядом с кодом и относит
+# `from alembic import op` к app. Из-за этого он требует переставлять
+# импорты в каждой сгенерированной миграции — в файле, который пишет не
+# человек. Пакет внешний, так и объявляем.
+known-third-party = ["alembic"]
+
 [tool.mypy]
 python_version = "3.14"
 strict = true
@@ -1891,6 +1899,11 @@ from app.core.db import Base
 
 # Импорт ради регистрации таблиц в Base.metadata: без него autogenerate
 # видит пустую схему и предлагает удалить всё, что есть в базе.
+#
+# Директива ниже не даёт ruff слить эти три строки с импортами выше и
+# разложить всё по алфавиту: тогда комментарий остался бы над одним
+# случайным импортом из трёх, а объяснять он должен все три.
+# isort: split
 from app.core.audit import AuditLog  # noqa: F401
 from app.features.expenses.models import Expense  # noqa: F401
 from app.features.users.models import User  # noqa: F401
@@ -1951,6 +1964,69 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
+```
+
+- [ ] **Шаг 3а: Переписать шапку `backend/alembic/script.py.mako`**
+
+Стоковый шаблон рождает красные миграции: он пишет
+`from typing import Sequence, Union` и `Union[...]`, а на них ruff даёт
+UP035, UP007 и I001. Каждая `make revision` требовала бы ручной правки
+файла, который пишет не человек.
+
+Заменить всё до строки `# revision identifiers` на:
+
+```mako
+## Шапка отличается от стоковой alembic намеренно: та пишет
+## `from typing import Sequence, Union` и `Union[...]`, а на них ruff в
+## `make check` даёт UP035, UP007 и I001 — то есть каждая сгенерированная
+## миграция рождалась бы красной. Здесь сразу PEP 604 и collections.abc,
+## а порядок импортов — тот, которого требует isort этого проекта.
+## Строки, начинающиеся с ##, — комментарии Mako: в сам файл миграции они
+## не попадают.
+"""${message}
+
+Revision ID: ${up_revision}
+Revises: ${down_revision | comma,n}
+Create Date: ${create_date}
+
+"""
+
+from collections.abc import Sequence
+
+import sqlalchemy as sa
+from alembic import op
+${imports if imports else ""}
+```
+
+- [ ] **Шаг 3б: Включить хуки форматирования в `backend/alembic.ini`**
+
+Шапку чинит шаблон, а тело миграции пишет сам генератор — кавычки,
+отступы внутри `create_table`, длинные строки со значениями enum. Без
+хуков каждая сгенерированная миграция приезжает красной.
+
+Дописать в конец секции `[post_write_hooks]`:
+
+```ini
+# alembic расставляет одинарные кавычки, свой отступ внутри create_table и
+# не смотрит на длину строки, поэтому без этого хука каждая новая ревизия
+# рождается красной, и человек правит форматирование руками в файле,
+# который писал не он. Хук приводит файл к общему стилю сразу после
+# генерации — до того, как его прочитают глазами.
+#
+# Runner — module, а не exec: ruff берётся из .venv этого проекта, а не с
+# PATH, где его может не быть вовсе или может оказаться другая версия.
+# check --fix идёт первым: он правит импорты и синтаксис аннотаций, а
+# format после него доводит отступы и кавычки. Обратный порядок оставил бы
+# файл переформатированным после правок, то есть снова красным.
+# Ненулевой код возврата хука alembic игнорирует, поэтому оставшееся, чего
+# ruff починить не может, не срывает генерацию, а всплывает в `make check`.
+hooks = ruff_fix,ruff_format
+ruff_fix.type = module
+ruff_fix.module = ruff
+ruff_fix.options = check --fix REVISION_SCRIPT_FILENAME
+ruff_format.type = module
+ruff_format.module = ruff
+ruff_format.options = format REVISION_SCRIPT_FILENAME
 ```
 
 - [ ] **Шаг 4: Завести локальную роль и базы**
@@ -2014,18 +2090,24 @@ cd backend && uv run alembic revision --autogenerate -m "init"
 Открыть файл в `backend/alembic/versions/` и проверить:
 
 - созданы три таблицы: `users`, `audit_log`, `expenses`;
-- созданы типы `role` и `user_status`;
+- созданы типы `role` и `user_status` — но искать их отдельным
+  оператором бесполезно: autogenerate создаёт их **внутри**
+  `create_table('users', ...)`, и строки `CREATE TYPE` в файле нет;
 - есть индексы `ix_audit_log_ts`, `ix_expenses_date`, уникальный по
   `users.login`;
-- в `downgrade()` типы enum удаляются явно (`sa.Enum(...).drop(op.get_bind())`)
-  — autogenerate этого не пишет, и повторный `upgrade` после `downgrade`
-  падает с «type role already exists». Дописать руками:
+- в `downgrade()` типы enum удаляются явно — autogenerate этого не пишет,
+  и повторный `upgrade` после `downgrade` падает с «type role already
+  exists».
+
+**Сгенерированный `downgrade` не переписывается**, его только дополняют:
+там уже есть `op.drop_index(...)` и `op.drop_table(...)`, которые нужны.
+Дописать **после** маркера `# ### end Alembic commands ###`:
 
 ```python
-def downgrade() -> None:
-    op.drop_table("expenses")
-    op.drop_table("audit_log")
-    op.drop_table("users")
+    # Дописано руками: autogenerate удаление enum-типов не пишет. Типы role и
+    # user_status создаются вместе с таблицей users, но drop_table их не
+    # удаляет — после downgrade они остаются в базе, и повторный upgrade
+    # падает с «type role already exists».
     sa.Enum(name="user_status").drop(op.get_bind())
     sa.Enum(name="role").drop(op.get_bind())
 ```
@@ -5841,7 +5923,15 @@ export default defineConfig({
   fullyParallel: false,
   use: { baseURL: `http://127.0.0.1:${PORT}` },
   webServer: {
-    command: `npm run build && cd ../backend && uv run uvicorn app.main:app --port ${PORT}`,
+    // alembic перед uvicorn обязателен: база e2e отдельная и пустая, а
+    // приложение при старте читает таблицу пользователей (заводит первую
+    // учётную запись). Без миграций оно падает на старте, и падают все
+    // сценарии разом — с сообщением про отсутствующую таблицу, а не про
+    // отсутствующую подготовку базы. DATABASE_URL из env ниже перекрывает
+    // .env, поэтому миграции лягут именно в e2e; проверено.
+    command:
+      `npm run build && cd ../backend && uv run alembic upgrade head && ` +
+      `uv run uvicorn app.main:app --port ${PORT}`,
     url: `http://127.0.0.1:${PORT}/api/health`,
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,
