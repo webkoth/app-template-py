@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,12 @@ _MESSAGES = {
     "extra_forbidden": "Лишнее поле",
     "greater_than": "Значение слишком мало",
     "less_than": "Значение слишком велико",
+    # На HTTP-пути pydantic отдаёт именно model_attributes_type, а не
+    # model_type: последний бывает только при прямой проверке модели, где
+    # формулировка «тело запроса» неверна по смыслу.
+    "model_attributes_type": "Тело запроса должно быть объектом",
+    "json_invalid": "Тело запроса не разобрать как JSON",
+    "string_unicode": "Значение содержит недопустимые символы",
 }
 
 # Префикс, которым pydantic оборачивает текст нашего собственного ValueError.
@@ -105,10 +112,12 @@ def _first_issue(errors: list[dict[str, object]], strip_marker: bool) -> Envelop
     else:
         message = _MESSAGES.get(str(issue.get("type", "")), raw)
 
-    return Envelope(
-        error=_printable(message),
-        field=str(location[-1]) if location else None,
-    )
+    # Имя поля берётся, только если хвост пути — строка. У ошибки разбора
+    # JSON там лежит смещение в байтах (loc = ("body", 13)), и форма стала
+    # бы подсвечивать поле с именем «13».
+    tail = location[-1] if location else None
+    field = _printable(tail) if isinstance(tail, str) else None
+    return Envelope(error=_printable(message) or FALLBACK_MESSAGE, field=field)
 
 
 def validation_error_to_envelope(error: ValidationError) -> Envelope:
@@ -125,7 +134,13 @@ def register_error_handlers(app: FastAPI) -> None:
     async def _rule(_: Request, exc: RuleViolation) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content=Envelope(error=_printable(exc.message), field=exc.field),
+            content=Envelope(
+                error=_printable(exc.message) or FALLBACK_MESSAGE,
+                # field тоже через _printable: он приходит из того же
+                # пользовательского ввода, что и текст, и незащищённый
+                # суррогат в нём роняет построение ответа ровно так же.
+                field=_printable(exc.field) if exc.field else None,
+            ),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -136,6 +151,21 @@ def register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content=_first_issue(exc.errors(), strip_marker=True),  # type: ignore[arg-type]
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+        # Без этого обработчика отказы FastAPI уходят в своей форме
+        # {"detail": ...}, и обещание «одна форма ответа» не выполняется:
+        # так отвечают непарсимое тело, 404, 405 и — начиная с зависимостей
+        # доступа — все отказы по правам, то есть самая частая ошибка в
+        # работающем приложении.
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=Envelope(
+                error=_printable(str(exc.detail)) or FALLBACK_MESSAGE, field=None
+            ),
+            headers=getattr(exc, "headers", None),
         )
 
     @app.exception_handler(Exception)

@@ -1,15 +1,20 @@
 import json
 
 import pytest
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field, ValidationError
 
 from app.core.errors import (
     FALLBACK_MESSAGE,
     RuleViolation,
     _first_issue,
+    register_error_handlers,
     validation_error_to_envelope,
 )
+
+SURROGATE_JSON = '"\\ud800"'
 
 
 class Sample(BaseModel):
@@ -126,3 +131,91 @@ def test_unknown_type_message_passed_through():
         )["error"]
         == "Something odd"
     )
+
+
+class TestRegisteredHandlers:
+    """Проверки на настоящем приложении.
+
+    Половина модуля — обработчики, и раньше она не была покрыта ничем: все
+    четыре дефекта, найденных ревью, жили именно в ней.
+    """
+
+    @staticmethod
+    def build() -> TestClient:
+        app = FastAPI()
+        register_error_handlers(app)
+
+        class Body(BaseModel):
+            title: str = Field(min_length=1)
+
+        @app.post("/rule")
+        async def rule(payload: dict) -> None:
+            raise RuleViolation(payload.get("text", ""), field=payload.get("field"))
+
+        @app.get("/surrogate")
+        async def surrogate() -> None:
+            # Суррогат подаётся со стороны сервера: через тело запроса его
+            # не отправить, клиент сам не может его закодировать. В жизни
+            # он попадает сюда из уже разобранных данных.
+            bad = json.loads(SURROGATE_JSON)
+            raise RuleViolation(f"Плохо: {bad}", field=f"поле{bad}")
+
+        @app.post("/schema")
+        async def schema(body: Body) -> dict:
+            return {"ok": True}
+
+        @app.get("/boom")
+        async def boom() -> None:
+            raise RuntimeError(
+                "postgresql://user:пароль@10.0.0.5/prod /var/www/app/secret.py"
+            )
+
+        # raise_server_exceptions=False обязателен: иначе Starlette
+        # перебрасывает исходное исключение, и ответ 500 не увидеть.
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_rule_violation_answers_envelope(self):
+        response = self.build().post("/rule", json={"text": "Так нельзя", "field": "x"})
+        assert response.status_code == 400
+        assert response.json() == {"error": "Так нельзя", "field": "x"}
+
+    def test_surrogate_in_field_does_not_break_response(self):
+        # Текст был защищён, а соседний аргумент в той же строке — нет, и
+        # незащищённый суррогат в имени поля ронял построение ответа: отказ
+        # 400 превращался в 500 внутри самого обработчика ошибок.
+        response = self.build().get("/surrogate")
+        assert response.status_code == 400
+        assert response.json()["field"] is not None
+
+    def test_empty_message_falls_back(self):
+        response = self.build().post("/rule", json={"text": ""})
+        assert response.json()["error"] == FALLBACK_MESSAGE
+
+    def test_schema_error_answers_400_not_422(self):
+        response = self.build().post("/schema", json={"title": ""})
+        assert response.status_code == 400
+        assert response.json()["field"] == "title"
+
+    def test_unparseable_body_answers_envelope(self):
+        # Раньше отвечало {"detail": ...} — другой формой, мимо конверта.
+        response = self.build().post(
+            "/schema",
+            content=b"{not json",
+            headers={"content-type": "application/json"},
+        )
+        assert response.status_code == 400
+        assert set(response.json()) == {"error", "field"}
+        # Смещение в байтах не должно становиться именем поля.
+        assert response.json()["field"] is None
+
+    def test_not_found_answers_envelope(self):
+        response = self.build().get("/нет-такого")
+        assert response.status_code == 404
+        assert set(response.json()) == {"error", "field"}
+
+    def test_unexpected_failure_leaks_nothing(self):
+        response = self.build().get("/boom")
+        assert response.status_code == 500
+        body = response.text
+        for secret in ("пароль", "10.0.0.5", "/var/www", "postgresql"):
+            assert secret not in body
