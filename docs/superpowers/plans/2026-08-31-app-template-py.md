@@ -2304,10 +2304,16 @@ git commit -m "feat: хеширование и проверка паролей �
 Create `backend/tests/unit/test_token.py`:
 
 ```python
-from app.core.security import AUTH_COOKIE, sign_session_token, verify_session_token
+from app.core.security import (
+    AUTH_COOKIE,
+    SESSION_MAX_AGE_SECONDS,
+    sign_session_token,
+    verify_session_token,
+)
 
 SECRET = "s" * 32
 OTHER = "o" * 32
+NOW = 1_756_600_000_000
 
 
 def test_cookie_name_is_stable():
@@ -2340,6 +2346,23 @@ def test_malformed_input_rejected():
     assert verify_session_token("!!!.!!!", SECRET) is None
 
 
+def test_expired_token_rejected():
+    # Подпись у просроченного токена остаётся верной — отвергает его только
+    # эта проверка. Без неё перехваченное значение куки работает вечно:
+    # max_age просит браузер её забыть, но ничего не обещает тому, кто
+    # предъявляет значение напрямую.
+    old = sign_session_token(
+        "admin", NOW - (SESSION_MAX_AGE_SECONDS + 60) * 1000, SECRET
+    )
+    assert verify_session_token(old, SECRET, now_ms=NOW) is None
+
+
+def test_token_at_age_limit_still_accepted():
+    issued = NOW - SESSION_MAX_AGE_SECONDS * 1000
+    edge = sign_session_token("admin", issued, SECRET)
+    assert verify_session_token(edge, SECRET, now_ms=NOW) == ("admin", issued)
+
+
 def test_login_with_separator_inside_survives():
     # Разделитель полезной нагрузки не должен ломаться на логине,
     # содержащем его: иначе такой логин молча не сможет войти.
@@ -2354,13 +2377,20 @@ Expected: FAIL — `ImportError: cannot import name 'AUTH_COOKIE'`
 
 - [ ] **Шаг 3: Дописать в конец `backend/app/core/security.py`**
 
-Вместе с кодом ниже добавь `import base64` в шапку файла. В задаче 12 его
-там нет намеренно: неиспользуемый импорт — это F401, и `make check` был бы
-красным всю предыдущую задачу.
+Вместе с кодом ниже добавь `import base64` и `import time` в шапку файла.
+В задаче 12 их там нет намеренно: неиспользуемый импорт — это F401, и
+`make check` был бы красным всю предыдущую задачу.
 
 ```python
 AUTH_COOKIE = "app_session"
 _SEPARATOR = "\n"
+
+# Срок жизни токена. Проверяется на сервере, а не только сроком куки:
+# max_age у куки — просьба к браузеру, и она ничего не значит для того, кто
+# записал её значение и предъявляет его напрямую. Без этой проверки
+# перехваченный токен действует вечно, потому что подпись у него остаётся
+# верной навсегда.
+SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 
 def _b64encode(raw: bytes) -> str:
@@ -2384,11 +2414,13 @@ def sign_session_token(login: str, issued_at_ms: int, secret: str) -> str:
     return f"{payload}.{signature}"
 
 
-def verify_session_token(token: str | None, secret: str) -> tuple[str, int] | None:
-    """Проверяет подпись и возвращает (логин, время выдачи) или None.
+def verify_session_token(
+    token: str | None, secret: str, now_ms: int | None = None
+) -> tuple[str, int] | None:
+    """Проверяет подпись и срок, возвращает (логин, время выдачи) или None.
 
-    Здесь только подпись и форма. Блокировку, роль и отзыв сессии проверяет
-    слой доступа: у отозванной куки подпись остаётся верной.
+    Здесь подпись, форма и срок. Блокировку, роль и отзыв сессии проверяет
+    слой доступа: у отозванной куки подпись тоже остаётся верной.
     """
     if not token or token.count(".") != 1:
         return None
@@ -2400,9 +2432,18 @@ def verify_session_token(token: str | None, secret: str) -> tuple[str, int] | No
         return None
     try:
         login, issued_raw = _b64decode(payload).decode().split(_SEPARATOR)
-        return login, int(issued_raw)
+        issued_at_ms = int(issued_raw)
     except (ValueError, UnicodeDecodeError, base64.binascii.Error):
         return None
+
+    # Время впрыскивается ради тестов: иначе проверку срока пришлось бы
+    # ждать неделю.
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    if now_ms - issued_at_ms > SESSION_MAX_AGE_SECONDS * 1000:
+        return None
+
+    return login, issued_at_ms
 ```
 
 Тест `test_login_with_separator_inside_survives` ожидает `None`: логин с
@@ -2413,7 +2454,7 @@ def verify_session_token(token: str | None, secret: str) -> tuple[str, int] | No
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_token.py -v`
-Expected: PASS, 6 passed
+Expected: PASS, 8 passed
 
 - [ ] **Шаг 5: Коммит**
 
@@ -2426,6 +2467,10 @@ git commit -m "feat: подпись и проверка токена сесси�
 
 ### Задача 14: Ограничение попыток входа
 
+Единственная защита от подбора пароля. Устройство взято из
+`app-template-ts` — не ради единообразия, а потому что там оно уже пережило
+три ошибки, каждая из которых превращала защиту в отказ в обслуживании.
+
 **Files:**
 - Create: `backend/app/core/rate_limit.py`
 - Create: `backend/tests/unit/test_rate_limit.py`
@@ -2437,7 +2482,12 @@ Create `backend/tests/unit/test_rate_limit.py`:
 ```python
 import pytest
 
-from app.core.rate_limit import MAX_ATTEMPTS, WINDOW_SECONDS, RateLimiter
+from app.core.rate_limit import (
+    BY_ADDRESS,
+    BY_LOGIN,
+    SWEEP_AT,
+    RateLimiter,
+)
 
 
 @pytest.fixture
@@ -2454,50 +2504,94 @@ def clock():
     return Clock()
 
 
-def test_allows_until_limit(clock):
-    limiter = RateLimiter(now=clock)
-    for _ in range(MAX_ATTEMPTS):
-        assert limiter.check("admin") is True
+def test_thresholds_differ_for_login_and_address():
+    # Порог по адресу выше намеренно: за одним адресом стоит офис или VPN, и
+    # общий порог означал бы «один человек трижды опечатался — все за этим
+    # адресом остались без входа».
+    assert BY_LOGIN.max_attempts == 5
+    assert BY_ADDRESS.max_attempts == 30
+
+
+class TestLock:
+    def test_allows_until_limit(self, clock):
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        for _ in range(BY_LOGIN.max_attempts - 1):
+            limiter.register_failure("admin")
+            assert limiter.retry_after("admin") == 0
         limiter.register_failure("admin")
-    assert limiter.check("admin") is False
+        assert limiter.retry_after("admin") > 0
 
+    def test_lock_expires(self, clock):
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        for _ in range(BY_LOGIN.max_attempts):
+            limiter.register_failure("admin")
+        clock.advance(BY_LOGIN.lock_seconds + 1)
+        assert limiter.retry_after("admin") == 0
 
-def test_window_expires(clock):
-    limiter = RateLimiter(now=clock)
-    for _ in range(MAX_ATTEMPTS):
+    def test_bot_cannot_extend_lock_forever(self, clock):
+        # Главное свойство. Неудача во время блокировки не записывается,
+        # иначе бот, стучащий раз в минуту, держит человека запертым
+        # бесконечно, и защита превращается в отказ в обслуживании.
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        for _ in range(BY_LOGIN.max_attempts):
+            limiter.register_failure("жертва")
+        for _ in range(int(BY_LOGIN.lock_seconds // 60) + 1):
+            clock.advance(60)
+            limiter.register_failure("жертва")
+        assert limiter.retry_after("жертва") == 0
+
+    def test_retry_after_counts_down(self, clock):
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        for _ in range(BY_LOGIN.max_attempts):
+            limiter.register_failure("admin")
+        first = limiter.retry_after("admin")
+        clock.advance(60)
+        assert limiter.retry_after("admin") == pytest.approx(first - 60)
+
+    def test_keys_are_independent(self, clock):
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        for _ in range(BY_LOGIN.max_attempts):
+            limiter.register_failure("admin")
+        assert limiter.retry_after("admin") > 0
+        assert limiter.retry_after("ivan") == 0
+
+    def test_success_clears_counter(self, clock):
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        for _ in range(BY_LOGIN.max_attempts):
+            limiter.register_failure("admin")
+        limiter.reset("admin")
+        assert limiter.retry_after("admin") == 0
+
+    def test_old_attempts_drop_out_of_window(self, clock):
+        # Скользящее окно, а не корзина с полным сбросом: пять попыток за час
+        # не должны запирать, если четыре из них были час назад.
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        for _ in range(BY_LOGIN.max_attempts - 1):
+            limiter.register_failure("admin")
+        clock.advance(BY_LOGIN.window_seconds + 1)
         limiter.register_failure("admin")
-    assert limiter.check("admin") is False
-    clock.advance(WINDOW_SECONDS + 1)
-    assert limiter.check("admin") is True
+        assert limiter.retry_after("admin") == 0
 
 
-def test_keys_are_independent(clock):
-    limiter = RateLimiter(now=clock)
-    for _ in range(MAX_ATTEMPTS):
-        limiter.register_failure("admin")
-    assert limiter.check("admin") is False
-    assert limiter.check("77.88.8.8") is True
+class TestMemory:
+    def test_stale_keys_are_swept(self, clock):
+        # Без чистки карта растёт неограниченно: каждый выдуманный логин
+        # остаётся в памяти навсегда, и миллион попыток с разными логинами
+        # исчерпывает её.
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        for i in range(SWEEP_AT + 100):
+            limiter.register_failure(f"логин{i}")
+        clock.advance(BY_LOGIN.window_seconds + 1)
+        limiter.register_failure("свежий")
+        assert limiter.size() == 1
 
-
-def test_success_clears_counter(clock):
-    limiter = RateLimiter(now=clock)
-    limiter.register_failure("admin")
-    limiter.register_failure("admin")
-    limiter.reset("admin")
-    for _ in range(MAX_ATTEMPTS):
-        assert limiter.check("admin") is True
-        limiter.register_failure("admin")
-
-
-def test_old_attempts_drop_out_of_window(clock):
-    # Скользящее окно, а не корзина с полным сбросом: пять попыток за час
-    # не должны блокировать, если четыре из них были вчера.
-    limiter = RateLimiter(now=clock)
-    for _ in range(MAX_ATTEMPTS - 1):
-        limiter.register_failure("admin")
-    clock.advance(WINDOW_SECONDS + 1)
-    limiter.register_failure("admin")
-    assert limiter.check("admin") is True
+    def test_fresh_keys_survive_sweep(self, clock):
+        # Чистка выбрасывает только протухшее. Иначе она бы снимала защиту
+        # ровно тогда, когда та нужнее всего — под массовым перебором.
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        for i in range(SWEEP_AT + 100):
+            limiter.register_failure(f"логин{i}")
+        assert limiter.size() == SWEEP_AT + 100
 ```
 
 - [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
@@ -2508,62 +2602,110 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'app.core.rate_limit'`
 - [ ] **Шаг 3: Написать `backend/app/core/rate_limit.py`**
 
 ```python
-"""Ограничение попыток входа.
-
-ИЗВЕСТНЫЙ ДОЛГ: счётчики живут в памяти процесса, перезапуск их обнуляет.
-Пока процесс один — это и есть счётчик контура. Появится второй воркер или
-второй процесс — понадобится общее хранилище, и решать это надо будет
-вместе с очередью.
-"""
-
 import time
-from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass
 
-MAX_ATTEMPTS = 5
-WINDOW_SECONDS = 15 * 60
+
+@dataclass(frozen=True, slots=True)
+class Limit:
+    max_attempts: int
+    window_seconds: float
+    lock_seconds: float
+
+
+BY_LOGIN = Limit(max_attempts=5, window_seconds=15 * 60, lock_seconds=15 * 60)
+BY_ADDRESS = Limit(max_attempts=30, window_seconds=15 * 60, lock_seconds=15 * 60)
+SWEEP_AT = 10_000
 
 
 class RateLimiter:
-    """Скользящее окно неудачных попыток по ключу.
-
-    Ключ — либо логин, либо адрес. Оба ограничиваются отдельно: по логину,
-    чтобы не подбирали пароль к конкретной учётной записи, по адресу — чтобы
-    не перебирали логины с одной машины.
-    """
-
-    def __init__(self, now: Callable[[], float] = time.monotonic) -> None:
-        # Время впрыскивается, чтобы тест не спал 15 минут.
+    def __init__(self, limit: Limit, now: Callable[[], float] = time.monotonic) -> None:
+        self._limit = limit
         self._now = now
-        self._failures: dict[str, list[float]] = defaultdict(list)
+        self._hits: dict[str, list[float]] = {}
 
-    def _recent(self, key: str) -> list[float]:
-        border = self._now() - WINDOW_SECONDS
-        kept = [t for t in self._failures[key] if t > border]
-        self._failures[key] = kept
+    def _fresh(self, key: str, now: float) -> list[float]:
+        kept = [
+            t for t in self._hits.get(key, ()) if now - t < self._limit.window_seconds
+        ]
+        if kept:
+            self._hits[key] = kept
+        else:
+            self._hits.pop(key, None)
         return kept
 
-    def check(self, key: str) -> bool:
-        """True — попытка допустима."""
-        return len(self._recent(key)) < MAX_ATTEMPTS
+    def _locked_until(self, marks: list[float]) -> float:
+        if len(marks) < self._limit.max_attempts:
+            return 0.0
+        return marks[len(marks) - self._limit.max_attempts] + self._limit.lock_seconds
+
+    def _sweep(self, now: float) -> None:
+        if len(self._hits) <= SWEEP_AT:
+            return
+        for key in list(self._hits):
+            self._fresh(key, now)
+
+    def retry_after(self, key: str) -> float:
+        now = self._now()
+        until = self._locked_until(self._fresh(key, now))
+        return until - now if until > now else 0.0
 
     def register_failure(self, key: str) -> None:
-        self._recent(key)
-        self._failures[key].append(self._now())
+        now = self._now()
+        marks = self._fresh(key, now)
+        if self._locked_until(marks) > now:
+            return
+        marks.append(now)
+        self._hits[key] = marks
+        self._sweep(now)
 
     def reset(self, key: str) -> None:
-        self._failures.pop(key, None)
+        self._hits.pop(key, None)
 
-
-login_limiter = RateLimiter()
+    def size(self) -> int:
+        return len(self._hits)
 ```
+
+Три решения здесь не косметические, и каждое проверено воспроизведением
+дефекта на упрощённой версии.
+
+**Два разных порога.** По логину строго (5), по адресу мягко (30). За одним
+адресом стоит офис или VPN: при общем пороге пять человек, каждый по разу
+опечатавшийся, оставляют без входа шестого. Воспроизведено.
+
+**Неудача во время блокировки не записывается.** Иначе бот, стучащий раз в
+минуту, держит человека запертым бесконечно — скользящее окно никогда не
+пустеет, и защита от подбора превращается в отказ в обслуживании против
+того, кого защищает. С этой строкой блокировка истекает через 15 минут
+независимо от бота.
+
+**Чистка при `SWEEP_AT` ключей.** Без неё карта растёт неограниченно:
+каждый выдуманный логин остаётся в памяти навсегда. Проверено — 50 000
+разных логинов дают 50 000 записей, ни одна не освобождается. Чистка
+выбрасывает только протухшее, поэтому не снимает защиту под массовым
+перебором.
+
+**Известный долг остаётся:** счётчики живут в памяти процесса, перезапуск
+их обнуляет. Пока воркер один — это и есть счётчик контура.
 
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_rate_limit.py -v`
-Expected: PASS, 5 passed
+Expected: PASS, 10 passed
 
-- [ ] **Шаг 5: Коммит**
+- [ ] **Шаг 5: Доказать мутациями, что тесты не пустые**
+
+Каждая мутация обязана уронить ровно один тест — тот, что её сторожит.
+После каждой возвращай файл и проверяй `git status`.
+
+| Что убрать | Обязан упасть |
+|---|---|
+| `if self._locked_until(marks) > now: return` в `register_failure` | `test_bot_cannot_extend_lock_forever` |
+| вызов `self._sweep(now)` | `test_stale_keys_are_swept` |
+| `max_attempts=30` у `BY_ADDRESS` заменить на `5` | `test_thresholds_differ_for_login_and_address` |
+
+- [ ] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/core/rate_limit.py backend/tests/unit/test_rate_limit.py
@@ -3262,6 +3404,8 @@ class OkResponse(BaseModel):
 """Правила входа."""
 
 import asyncio
+import logging
+import math
 import time
 from datetime import UTC, datetime
 
@@ -3270,18 +3414,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import RuleViolation
-from app.core.rate_limit import login_limiter
+from app.core.rate_limit import address_limiter, login_limiter
 from app.core.security import hash_password, sign_session_token, verify_password
 from app.domain.roles import Role
 from app.features.users.models import User, UserStatus
 
+logger = logging.getLogger(__name__)
+
 # Один и тот же текст на любой отказ: разные сообщения подсказывают, какие
 # логины существуют.
 DENIED = "Неверный логин или пароль"
-TOO_MANY = "Слишком много попыток. Попробуй через 15 минут"
+TOO_MANY = "Слишком много попыток. Попробуй через {minutes} мин"
 # Нижняя граница времени ответа. Без неё отказ по несуществующему логину
 # возвращается заметно быстрее, чем по неверному паролю: scrypt считается
 # только во втором случае, и по времени ответа логины перебираются.
+#
+# Граница выравнивает ветки, только пока настоящая работа в неё
+# укладывается. scrypt занимает около 25 мс, под нагрузкой в пуле потоков
+# — до 60 мс, запас четырёхкратный. Если он однажды исчерпается, различие
+# вернётся молча, поэтому превышение пишется в лог.
 MIN_RESPONSE_SECONDS = 0.25
 
 
@@ -3295,10 +3446,24 @@ async def authenticate(
         remaining = MIN_RESPONSE_SECONDS - (time.monotonic() - started)
         if remaining > 0:
             await asyncio.sleep(remaining)
+        else:
+            # Работа не уложилась в границу — значит ветки перестали быть
+            # неразличимыми по времени. Молча это оставлять нельзя: оракул
+            # вернётся, и заметить его будет нечем.
+            logger.warning(
+                "вход занял %.0f мс при границе %.0f мс: выравнивание времени "
+                "ответа больше не работает",
+                (time.monotonic() - started) * 1000,
+                MIN_RESPONSE_SECONDS * 1000,
+            )
 
-    if not login_limiter.check(login) or not login_limiter.check(client_ip):
+    # Два ограничителя с разными порогами: по логину строго, по адресу
+    # мягко. Общий порог на адрес оставлял бы без входа весь офис за одним
+    # NAT из-за пяти чужих опечаток.
+    wait = max(login_limiter.retry_after(login), address_limiter.retry_after(client_ip))
+    if wait > 0:
         await finish()
-        raise RuleViolation(TOO_MANY)
+        raise RuleViolation(TOO_MANY.format(minutes=math.ceil(wait / 60)))
 
     user = (
         await session.execute(select(User).where(User.login == login))
@@ -3318,12 +3483,12 @@ async def authenticate(
     )
     if not ok or user is None:
         login_limiter.register_failure(login)
-        login_limiter.register_failure(client_ip)
+        address_limiter.register_failure(client_ip)
         await finish()
         raise RuleViolation(DENIED)
 
     login_limiter.reset(login)
-    login_limiter.reset(client_ip)
+    address_limiter.reset(client_ip)
     issued_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     user.last_login_at = datetime.now(UTC)
     await session.commit()
