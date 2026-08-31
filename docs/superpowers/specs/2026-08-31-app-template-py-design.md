@@ -460,7 +460,8 @@ Toolchain два, точка входа одна — иначе половину
 make check     ruff format --check · ruff check · mypy · lint-imports · pytest
                tsc --noEmit · проверка дрейфа типов · vitest
 make dev       бэкенд и фронтенд разом
-make migrate   alembic revision --autogenerate, затем чтение глазами
+make revision  alembic revision --autogenerate, затем чтение глазами
+make migrate   alembic upgrade head
 ```
 
 `make check` прогоняется перед любым коммитом. Его же прогоняет CI на

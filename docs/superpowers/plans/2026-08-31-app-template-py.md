@@ -628,7 +628,7 @@ Toolchain два, а точка входа должна остаться одн�
 # забирает себе.
 
 .PHONY: install check check-backend check-frontend check-openapi openapi \
-        dev dev-backend dev-frontend migrate migrate-up
+        dev dev-backend dev-frontend revision migrate
 
 install:
 	cd backend && uv sync
@@ -690,17 +690,23 @@ dev:
 	trap "kill -- -$$BACK 2>/dev/null || kill $$BACK 2>/dev/null" EXIT INT TERM; \
 	cd frontend && npm run dev
 
+# revision создаёт миграцию, migrate её применяет — как в самом Alembic
+# (`alembic revision` и `alembic upgrade`). Обратное именование, где migrate
+# создаёт, привычно по Django и Rails и здесь стало бы ловушкой: человек с
+# такой привычкой запустил бы `make migrate`, получил лишнюю пустую ревизию
+# и не понял бы почему.
+#
 # m= обязателен: alembic revision без имени создаёт файл со случайным
 # именем, и через месяц история миграций нечитаема.
-migrate:
-	@test -n "$(m)" || { echo "нужно имя: make migrate m=<слаг>"; exit 1; }
+revision:
+	@test -n "$(m)" || { echo "нужно имя: make revision m=<слаг>"; exit 1; }
 	cd backend && uv run alembic revision --autogenerate -m "$(m)"
 	@echo ""
 	@echo "ПРОЧИТАЙ сгенерированную миграцию глазами перед применением."
 	@echo "Alembic не видит переименований: показывает удаление плюс"
 	@echo "добавление, и данные колонки теряются молча."
 
-migrate-up:
+migrate:
 	cd backend && uv run alembic upgrade head
 ```
 
@@ -720,8 +726,12 @@ migrate-up:
 группу процессов, `kill -- -$BACK` убивает группу целиком вместе с питоном,
 которого `uv run` запускает своим потомком.
 
-**Защита `m=` в `migrate`.** Без имени Alembic создаёт файл со случайным
-именем, и через месяц история миграций нечитаема.
+**Имена целей.** `revision` создаёт миграцию, `migrate` применяет — как в
+самом Alembic. Обратный порядок, где `migrate` создаёт, привычен по Django и
+Rails и стал бы здесь ловушкой.
+
+**Защита `m=`.** Без имени Alembic создаёт файл со случайным именем, и через
+месяц история миграций нечитаема. Пустая строка (`m=""`) тоже отвергается.
 
 - [ ] **Шаг 2: Проверить, что проверки проходят**
 
@@ -732,7 +742,8 @@ Expected: ruff, mypy, lint-imports и pytest зелёные (13 тестов), �
 - [ ] **Шаг 3: Проверить, что защиты срабатывают**
 
 ```bash
-make migrate            # ожидается отказ: «нужно имя: make migrate m=<слаг>»
+make revision           # ожидается отказ: «нужно имя: make revision m=<слаг>»
+make revision m=""      # тот же отказ
 make -n dev             # ожидается набор команд без запуска
 ```
 
@@ -6152,7 +6163,9 @@ cp /Users/minas/projects/app-template/AGENTS.md AGENTS.md
 ```markdown
 ## База данных
 
-- Схему меняем только через модели SQLAlchemy + `make migrate m=<слаг>`.
+- Схему меняем только через модели SQLAlchemy + `make revision m=<слаг>`,
+  затем `make migrate`. Имена как в Alembic: `revision` создаёт, `migrate`
+  применяет.
 - **Сгенерированную миграцию читают глазами перед применением.**
   `--autogenerate` не видит переименований: он показывает удаление плюс
   добавление, и данные колонки теряются молча. Он же не всегда замечает
@@ -6313,7 +6326,7 @@ CI колесо есть, и ничего этого не происходит.
     cp .env.example .env
     # APP_AUTH_SECRET сгенерировать: openssl rand -hex 32
     make install
-    make migrate-up
+    make migrate
     make dev
 
 Приложение отвечает на http://127.0.0.1:5173, вход admin / admin.
@@ -6510,7 +6523,7 @@ createdb <слаг>_dev && createdb <слаг>_e2e
 cp .env.example .env
 # APP_AUTH_SECRET: openssl rand -hex 32
 make install
-make migrate-up
+make migrate
 make dev
 ```
 
