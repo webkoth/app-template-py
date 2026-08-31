@@ -5,7 +5,7 @@
 # забирает себе.
 
 .PHONY: install check check-backend check-frontend check-openapi openapi \
-        dev dev-backend dev-frontend migrate migrate-up
+        dev dev-backend dev-frontend revision migrate
 
 install:
 	cd backend && uv sync
@@ -67,15 +67,21 @@ dev:
 	trap "kill -- -$$BACK 2>/dev/null || kill $$BACK 2>/dev/null" EXIT INT TERM; \
 	cd frontend && npm run dev
 
+# revision создаёт миграцию, migrate её применяет — как в самом Alembic
+# (`alembic revision` и `alembic upgrade`). Обратное именование, где migrate
+# создаёт, привычно по Django и Rails и здесь стало бы ловушкой: человек с
+# такой привычкой запустил бы `make migrate`, получил лишнюю пустую ревизию
+# и не понял бы почему.
+#
 # m= обязателен: alembic revision без имени создаёт файл со случайным
 # именем, и через месяц история миграций нечитаема.
-migrate:
-	@test -n "$(m)" || { echo "нужно имя: make migrate m=<слаг>"; exit 1; }
+revision:
+	@test -n "$(m)" || { echo "нужно имя: make revision m=<слаг>"; exit 1; }
 	cd backend && uv run alembic revision --autogenerate -m "$(m)"
 	@echo ""
 	@echo "ПРОЧИТАЙ сгенерированную миграцию глазами перед применением."
 	@echo "Alembic не видит переименований: показывает удаление плюс"
 	@echo "добавление, и данные колонки теряются молча."
 
-migrate-up:
+migrate:
 	cd backend && uv run alembic upgrade head
