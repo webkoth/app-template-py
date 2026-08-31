@@ -36,9 +36,30 @@ def parse_date_input_value(raw: str) -> datetime | None:
     return datetime.combine(parsed, time.min, tzinfo=MSK)
 
 
+def _in_moscow(value: datetime) -> datetime:
+    """Переводит значение в московскую зону, отвергая наивное.
+
+    astimezone на datetime без зоны не падает: Python молча считает его
+    временем в зоне процесса. Проверено — один и тот же вызов даёт три
+    разные даты при TZ=Europe/Moscow, UTC и America/New_York.
+
+    Для нас это не теория: машина разработчика в Москве, контур на сервере
+    почти наверняка в UTC. Локально показ верен, на контуре та же запись
+    съезжает на три часа, и расхождение ищут в данных, а не в коде.
+
+    Из базы значения приходят с зоной (TIMESTAMPTZ), поэтому наивное
+    значение здесь означает ошибку в коде, и падать надо громко.
+    """
+    if value.tzinfo is None:
+        raise ValueError(
+            "datetime без часового пояса: показ зависел бы от зоны сервера"
+        )
+    return value.astimezone(MSK)
+
+
 def format_date(value: datetime) -> str:
-    return value.astimezone(MSK).strftime("%d.%m.%Y")
+    return _in_moscow(value).strftime("%d.%m.%Y")
 
 
 def format_date_time(value: datetime) -> str:
-    return value.astimezone(MSK).strftime("%d.%m.%Y %H:%M")
+    return _in_moscow(value).strftime("%d.%m.%Y %H:%M")

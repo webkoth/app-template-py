@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from app.domain.dates import MSK, format_date, format_date_time, parse_date_input_value
 
 
@@ -58,3 +60,14 @@ class TestFormat:
         # Из базы значения приходят в UTC. Показывать их надо по Москве.
         v = datetime(2026, 8, 31, 21, 30, tzinfo=UTC)
         assert format_date_time(v) == "01.09.2026 00:30"
+
+    def test_naive_datetime_rejected(self):
+        # Значение без зоны astimezone не отвергает: Python считает его
+        # временем в зоне процесса и молча конвертирует. На машине в Москве
+        # показ верен, на сервере в UTC — съезжает на три часа. Такая
+        # ошибка обнаруживается на контуре и ищется в данных, а не в коде,
+        # поэтому падать надо здесь и громко.
+        with pytest.raises(ValueError):
+            format_date(datetime(2026, 8, 31))
+        with pytest.raises(ValueError):
+            format_date_time(datetime(2026, 8, 31, 12, 0))
