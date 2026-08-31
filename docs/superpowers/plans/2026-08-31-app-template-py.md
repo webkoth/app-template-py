@@ -509,14 +509,14 @@ Expected: PASS, 13 passed
 
 ```dotenv
 # Локальная разработка. На контуре этот файл пишет app-provision.
-DATABASE_URL="postgresql://apptemplate:apptemplate@localhost:5432/apptemplate_dev"
+DATABASE_URL="postgresql://apptemplate:apptemplate@localhost:5432/apptemplatepy_dev"
 APP_ENV="local"
 # openssl rand -hex 32
 APP_AUTH_SECRET=""
 COOKIE_SECURE="false"
 
 # Отдельная база под e2e: тесты меняют данные.
-DATABASE_URL_E2E="postgresql://apptemplate:apptemplate@localhost:5432/apptemplate_e2e"
+DATABASE_URL_E2E="postgresql://apptemplate:apptemplate@localhost:5432/apptemplatepy_e2e"
 
 # Первая учётная запись. Заводится только при пустой таблице пользователей.
 # Пустое значение логина или пароля выключает создание.
@@ -1868,17 +1868,25 @@ else:
 `FATAL: role "apptemplate" does not exist`. Ошибка появляется не при
 создании баз, а позже, при первой миграции, и ищут её не там.
 
-Имя и пароль совпадают со слагом приложения. На контуре роль заводит
-провижинер (`<слаг>_app` со сгенерированным паролем), локально — это ручной
-шаг установки.
+На контуре роль заводит провижинер (`<слаг>_app` со сгенерированным
+паролем), локально — это ручной шаг установки.
+
+Имена баз — `apptemplatepy_*`, а не `apptemplate_*`, и это не описка.
+TS-шаблон `app-template-ts` берёт по умолчанию ровно `apptemplate_dev` и
+`apptemplate_e2e`. У кого оба шаблона лежат рядом — а это обычный случай,
+их для того и два, — базы столкнутся: Alembic увидит в своей базе чужие
+таблицы, созданные Prisma, и либо откажется накатывать миграции, либо
+предложит удалить незнакомое. Проверено на живой машине.
 
 ```bash
 psql -d postgres -c "CREATE ROLE apptemplate LOGIN PASSWORD 'apptemplate'"
-createdb apptemplate_dev
-createdb apptemplate_e2e
-psql -d postgres -c "ALTER DATABASE apptemplate_dev OWNER TO apptemplate"
-psql -d postgres -c "ALTER DATABASE apptemplate_e2e OWNER TO apptemplate"
+createdb -O apptemplate apptemplatepy_dev
+createdb -O apptemplate apptemplatepy_e2e
 ```
+
+`-O` задаёт владельца при создании. Отдельным `ALTER DATABASE ... OWNER`
+это делать не надо: промахнувшись именем, легко сменить владельца чужой
+базы, и заметят это не сразу.
 
 Проверить, что строка из `.env` действительно работает:
 
@@ -1887,7 +1895,7 @@ psql "$(grep '^DATABASE_URL=' .env | sed 's/DATABASE_URL=//;s/\"//g')" \
   -tAc 'SELECT current_user, current_database()'
 ```
 
-Ожидается `apptemplate|apptemplate_dev`.
+Ожидается `apptemplate|apptemplatepy_dev`.
 
 Если `createdb` не найден — PostgreSQL 18 не установлен; поставить через
 `brew install postgresql@18` (macOS) или `apt install postgresql-18` (Ubuntu).
