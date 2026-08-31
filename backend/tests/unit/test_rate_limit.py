@@ -3,7 +3,8 @@ import pytest
 from app.core.rate_limit import (
     BY_ADDRESS,
     BY_LOGIN,
-    SWEEP_AT,
+    MAX_KEYS,
+    Limit,
     RateLimiter,
 )
 
@@ -92,21 +93,48 @@ class TestLock:
 
 
 class TestMemory:
-    def test_stale_keys_are_swept(self, clock):
-        # Без чистки карта растёт неограниченно: каждый выдуманный логин
-        # остаётся в памяти навсегда, и миллион попыток с разными логинами
-        # исчерпывает её.
+    def test_map_is_bounded(self, clock):
+        # Без потолка карта растёт неограниченно: каждый выдуманный логин
+        # остаётся в памяти навсегда.
         limiter = RateLimiter(BY_LOGIN, now=clock)
-        for i in range(SWEEP_AT + 100):
+        for i in range(MAX_KEYS + 500):
             limiter.register_failure(f"логин{i}")
-        clock.advance(BY_LOGIN.window_seconds + 1)
-        limiter.register_failure("свежий")
+        assert limiter.size() == MAX_KEYS
+
+    def test_recent_keys_survive_eviction(self, clock):
+        # Вытесняются самые давние, а не случайные: иначе защита снималась
+        # бы ровно с того, кого сейчас перебирают.
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        limiter.register_failure("первый")
+        for i in range(MAX_KEYS + 100):
+            limiter.register_failure(f"логин{i}")
+        limiter.register_failure("последний")
+        assert limiter.retry_after("последний") == 0
+        assert limiter.size() == MAX_KEYS
+
+
+class TestKeyNormalization:
+    def test_case_and_spaces_share_one_bucket(self, clock):
+        # Без приведения `admin`, `Admin` и `admin ` — три разные корзины, и
+        # пятибуквенный логин даёт 32 корзины только за счёт регистра, то
+        # есть 160 попыток вместо пяти.
+        limiter = RateLimiter(BY_LOGIN, now=clock)
+        for key in ("admin", "Admin", "ADMIN", " admin", "admin "):
+            limiter.register_failure(key)
+        assert limiter.retry_after("admin") > 0
         assert limiter.size() == 1
 
-    def test_fresh_keys_survive_sweep(self, clock):
-        # Чистка выбрасывает только протухшее. Иначе она бы снимала защиту
-        # ровно тогда, когда та нужнее всего — под массовым перебором.
+    def test_reset_uses_same_normalization(self, clock):
         limiter = RateLimiter(BY_LOGIN, now=clock)
-        for i in range(SWEEP_AT + 100):
-            limiter.register_failure(f"логин{i}")
-        assert limiter.size() == SWEEP_AT + 100
+        for _ in range(BY_LOGIN.max_attempts):
+            limiter.register_failure("Admin")
+        limiter.reset("admin")
+        assert limiter.retry_after("ADMIN") == 0
+
+
+def test_lock_longer_than_window_is_rejected():
+    # Такая настройка молча не работает: отметки выбрасываются по окну, и
+    # блокировка снимается вместе с ними. Ручка, крутящаяся только вниз,
+    # хуже отсутствующей.
+    with pytest.raises(ValueError):
+        Limit(max_attempts=5, window_seconds=60, lock_seconds=120)
