@@ -550,6 +550,10 @@ git commit -m "feat: конфигурация приложения на pydantic
 [importlinter]
 root_packages =
     app
+# Обязательно, когда среди forbidden_modules есть внешние пакеты. Без этой
+# строки import-linter отказывается разбирать конфиг целиком, а не молча
+# пропускает контракт.
+include_external_packages = True
 
 [importlinter:contract:domain-is-pure]
 name = domain не знает ни про базу, ни про HTTP, ни про фичи
@@ -561,42 +565,31 @@ forbidden_modules =
     app.features
     sqlalchemy
     fastapi
-
-[importlinter:contract:features-are-independent]
-name = фичи не лезут друг другу внутрь
-type = independence
-modules =
-    app.features.auth
-    app.features.users
-    app.features.expenses
-    app.features.audit
-    app.features.meta
-
-[importlinter:contract:router-goes-through-service]
-name = router не ходит в модели мимо service
-type = forbidden
-source_modules =
-    app.features.auth.router
-    app.features.users.router
-    app.features.expenses.router
-forbidden_modules =
-    app.features.users.models
-    app.features.expenses.models
 ```
 
-Контракт `independence` запрещает импорт в обе стороны. Когда расходам
-понадобится пользователь, обращение идёт через `users.service` — и это
-осознанный шаг, а не случайная связь: контракт придётся менять руками, и
-изменение будет видно в дифе.
+Здесь один контракт из трёх задуманных, и это не упрощение, а следствие
+проверенного поведения инструмента: **`lint-imports` падает с кодом 1, если
+контракт называет модуль, которого ещё нет** («Module 'app.features.users'
+does not exist»). Записав сразу все три, мы получили бы красный `make check`
+с задачи 4 по задачу 22 — восемнадцать задач подряд, в течение которых
+проверки перестали бы что-либо значить, а привычка их игнорировать осталась
+бы навсегда.
 
-- [ ] **Шаг 2: Проверить, что конфиг читается**
+Поэтому контракт появляется вместе с модулями, которые он защищает:
+
+| Контракт | Появляется | Почему там |
+|---|---|---|
+| `domain-is-pure` | здесь | `app.domain`, `app.core`, `app.features` уже есть |
+| `features-are-independent` | задача 10 | там создаются пакеты всех пяти фич |
+| `router-goes-through-service` | задача 22 | там появляются последние `router.py` |
+
+- [ ] **Шаг 2: Проверить, что контракт работает**
 
 Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
-Expected: контракты проходят (модулей пока нет — это норма, они появятся
-дальше; команда не должна падать с ошибкой разбора конфига).
+Expected: `Contracts: 1 kept, 0 broken.`
 
-Если команда жалуется на отсутствующие модули — это ожидаемо до задачи 17.
-Вернуться к ней после появления фич и убедиться, что все контракты зелёные.
+Проверяй именно эту строку, а не отсутствие ошибки: пустой вывод с нулевым
+кодом означает неверный способ запуска, а не пройденную проверку.
 
 - [ ] **Шаг 3: Коммит**
 
@@ -1440,15 +1433,37 @@ class Expense(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 ```
 
-- [ ] **Шаг 5: Проверить типы и границы**
+- [ ] **Шаг 5: Добавить контракт независимости фич**
+
+Пакеты всех пяти фич теперь существуют, значит контракт можно включить.
+Дописать в `backend/.importlinter`:
+
+```ini
+[importlinter:contract:features-are-independent]
+name = фичи не лезут друг другу внутрь
+type = independence
+modules =
+    app.features.auth
+    app.features.users
+    app.features.expenses
+    app.features.audit
+    app.features.meta
+```
+
+`independence` запрещает импорт в обе стороны. Когда расходам понадобится
+пользователь, обращение идёт через `users.service` — и это осознанный шаг, а
+не случайная связь: контракт придётся править руками, и правка будет видна
+в дифе.
+
+- [ ] **Шаг 6: Проверить типы и границы**
 
 Run: `cd backend && uv run mypy app && uv run --group lint lint-imports --config .importlinter`
-Expected: mypy Success; все контракты Kept.
+Expected: mypy Success; `Contracts: 2 kept, 0 broken.`
 
-- [ ] **Шаг 6: Коммит**
+- [ ] **Шаг 7: Коммит**
 
 ```bash
-git add backend/app/core/audit.py backend/app/features/
+git add backend/app/core/audit.py backend/app/features/ backend/.importlinter
 git commit -m "feat: таблицы пользователей, журнала аудита и расходов"
 ```
 
@@ -3762,12 +3777,32 @@ if __name__ == "__main__":
 Run: `cd backend && uv run pytest -v`
 Expected: PASS — все тесты фаз 1–4 зелёные (около 80).
 
-- [ ] **Шаг 7: Проверить границы модулей**
+- [ ] **Шаг 7: Добавить последний контракт границ**
+
+Все `router.py` теперь существуют. Дописать в `backend/.importlinter`:
+
+```ini
+[importlinter:contract:router-goes-through-service]
+name = router не ходит в модели мимо service
+type = forbidden
+source_modules =
+    app.features.auth.router
+    app.features.users.router
+    app.features.expenses.router
+forbidden_modules =
+    app.features.users.models
+    app.features.expenses.models
+```
+
+- [ ] **Шаг 8: Проверить границы модулей**
 
 Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
-Expected: все контракты Kept.
+Expected: `Contracts: 3 kept, 0 broken.`
 
-- [ ] **Шаг 8: Поднять приложение руками**
+Если третий контракт сразу broken — это не повод его ослабить. Значит роутер
+и правда лезет в модели мимо сервиса, и чинить надо роутер.
+
+- [ ] **Шаг 9: Поднять приложение руками**
 
 ```bash
 cd backend && uv run uvicorn app.main:app --port 8000
@@ -3779,11 +3814,12 @@ curl -s -X POST http://127.0.0.1:8000/api/auth/login \
 
 Expected: `{"status":"ok"}`; вход отвечает 200 и ставит куку `app_session`.
 
-- [ ] **Шаг 9: Коммит**
+- [ ] **Шаг 10: Коммит**
 
 ```bash
 git add backend/app/features/audit/ backend/app/core/static.py \
-        backend/app/main.py backend/app/openapi.py backend/tests/api/test_audit.py
+        backend/app/main.py backend/app/openapi.py backend/.importlinter \
+        backend/tests/api/test_audit.py
 git commit -m "feat: журнал аудита, раздача статики и сборка приложения"
 ```
 
