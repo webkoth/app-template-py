@@ -2304,6 +2304,8 @@ git commit -m "feat: хеширование и проверка паролей �
 Create `backend/tests/unit/test_token.py`:
 
 ```python
+import time
+
 from app.core.security import (
     AUTH_COOKIE,
     SESSION_MAX_AGE_SECONDS,
@@ -2322,8 +2324,13 @@ def test_cookie_name_is_stable():
 
 
 def test_roundtrip():
-    token = sign_session_token("admin", 1756600000000, SECRET)
-    assert verify_session_token(token, SECRET) == ("admin", 1756600000000)
+    # Время берётся настоящее, а не константа: это единственный тест, где
+    # now_ms не передан, то есть единственное покрытие ветки с системными
+    # часами. С константой он был бы зелёным ровно ту неделю, когда его
+    # написали, а потом падал бы по сроку на исправном коде.
+    issued = int(time.time() * 1000)
+    token = sign_session_token("admin", issued, SECRET)
+    assert verify_session_token(token, SECRET) == ("admin", issued)
 
 
 def test_other_secret_rejected():
@@ -2333,7 +2340,7 @@ def test_other_secret_rejected():
 
 def test_tampered_payload_rejected():
     token = sign_session_token("viewer", 1756600000000, SECRET)
-    payload, sig = token.split(".")
+    _payload, sig = token.split(".")
     forged = sign_session_token("admin", 1756600000000, OTHER).split(".")[0]
     assert verify_session_token(f"{forged}.{sig}", SECRET) is None
 
@@ -2344,6 +2351,16 @@ def test_malformed_input_rejected():
     assert verify_session_token("безточки", SECRET) is None
     assert verify_session_token("a.b.c", SECRET) is None
     assert verify_session_token("!!!.!!!", SECRET) is None
+
+
+def test_non_ascii_cookie_rejected_without_raising():
+    # Кука с байтом от 0x80 приходит декодированной как latin-1 и даёт
+    # не-ASCII строку. Форму «одна точка» она проходит, а сравнение подписи
+    # на таких строках бросает TypeError вместо False — то есть мусорная
+    # кука роняла бы вход пятисоткой. Байты ниже — то, что реально приходит
+    # в заголовке.
+    forged = b"\xd0\xb0.\xd0\xb1".decode("latin-1")
+    assert verify_session_token(forged, SECRET) is None
 
 
 def test_expired_token_rejected():
@@ -2422,7 +2439,12 @@ def verify_session_token(
     Здесь подпись, форма и срок. Блокировку, роль и отзыв сессии проверяет
     слой доступа: у отозванной куки подпись тоже остаётся верной.
     """
-    if not token or token.count(".") != 1:
+    # isascii обязателен. Заголовки приходят декодированными как latin-1,
+    # поэтому кука с любым байтом от 0x80 даёт строку с не-ASCII символами.
+    # Форму «одна точка» она при этом проходит, а hmac.compare_digest на
+    # таких строках не возвращает False, а бросает TypeError — то есть
+    # мусорная кука давала бы пятисотку вместо отказа входа. Проверено.
+    if not token or token.count(".") != 1 or not token.isascii():
         return None
     payload, signature = token.split(".")
     expected = _b64encode(
@@ -2433,7 +2455,11 @@ def verify_session_token(
     try:
         login, issued_raw = _b64decode(payload).decode().split(_SEPARATOR)
         issued_at_ms = int(issued_raw)
-    except (ValueError, UnicodeDecodeError, base64.binascii.Error):
+    except ValueError:
+        # Один ValueError покрывает всё, что здесь может случиться:
+        # binascii.Error и UnicodeDecodeError — его подклассы. Перечислять
+        # их поимённо не только лишнее, но и невозможно: base64.binascii
+        # существует в рантайме, а в описании типов его нет, и mypy падает.
         return None
 
     # Время впрыскивается ради тестов: иначе проверку срока пришлось бы
@@ -2454,7 +2480,7 @@ def verify_session_token(
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_token.py -v`
-Expected: PASS, 8 passed
+Expected: PASS, 9 passed
 
 - [ ] **Шаг 5: Коммит**
 
