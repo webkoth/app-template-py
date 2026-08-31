@@ -43,6 +43,25 @@ class TestParse:
         assert parse_money_to_minor("839,29") == 83929
         assert parse_money_to_minor("0,29") == 29
 
+    def test_arabic_indic_digits_rejected(self):
+        # \d в Python юникодный и принял бы их, разобрав верно. Но интерфейс
+        # шлёт только ASCII, и молчаливая поддержка чужих систем счисления —
+        # случайность, а не решение. Явное [0-9] делает границу видимой.
+        assert parse_money_to_minor("١٢٣,٤٥") is None
+
+    def test_long_input_is_exact(self):
+        # Умножение на 100 через Decimal округляется по точности контекста
+        # (28 значащих цифр) и на длинном вводе молча возвращает другое
+        # число. Склейка строк точна при любой длине.
+        assert parse_money_to_minor("1" * 29 + ",00") == int("1" * 29 + "00")
+
+    def test_over_limit_is_parsed_not_rejected(self):
+        # Разбор предела не проверяет — это контракт, а не упущение. None
+        # означает «не число», и нагрузив его смыслом «слишком много», мы
+        # лишили бы сервис возможности показать верное сообщение. Проверку
+        # по MAX_AMOUNT_MINOR делает сервис фичи.
+        assert parse_money_to_minor("21474836.48") == MAX_AMOUNT_MINOR + 1
+
 
 class TestFormat:
     @staticmethod
