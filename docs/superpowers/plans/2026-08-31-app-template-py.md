@@ -1463,14 +1463,36 @@ git commit -m "feat: категории расходов и сводка по к
 
 from collections.abc import AsyncIterator
 
+from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
 
+# Имена ограничений задаются нами, а не базой. Без этого соглашения
+# внешний ключ создаётся вообще без имени, и PostgreSQL придумывает своё.
+# Пока связей нет, разница незаметна; как только они появятся — а в
+# настоящем приложении они появятся, — `alembic --autogenerate` начнёт
+# выдавать `op.drop_constraint(None, ...)`, и миграция упадёт на `None`
+# вместо имени.
+#
+# Соглашение обязано стоять до первой миграции: она замораживает имена, и
+# переименование потом — отдельная миграция ради того, что стоило одной
+# строки. Проверено сравнением DDL: с соглашением ограничения получают
+# читаемые pk_users, fk_expenses_author_id_users, ck_expenses_*.
+NAMING_CONVENTION = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
+
 
 class Base(DeclarativeBase):
     """Общий предок таблиц. От него же Alembic берёт метаданные."""
+
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
 engine = create_async_engine(
