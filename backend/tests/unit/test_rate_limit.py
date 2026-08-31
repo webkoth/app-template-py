@@ -128,6 +128,10 @@ class TestKeyNormalization:
         limiter = RateLimiter(BY_LOGIN, now=clock)
         for _ in range(BY_LOGIN.max_attempts):
             limiter.register_failure("Admin")
+        # Проверка до сброса обязательна: без неё тест зелен и когда
+        # приведения нет вовсе — у «ADMIN» просто не оказывается отметок, и
+        # ноль получается сам собой.
+        assert limiter.retry_after("ADMIN") > 0
         limiter.reset("admin")
         assert limiter.retry_after("ADMIN") == 0
 
