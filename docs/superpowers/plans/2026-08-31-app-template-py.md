@@ -1919,9 +1919,7 @@ config = context.config
 # Провижинер генерирует пароль через `openssl rand -hex`, где процента не
 # бывает, поэтому сегодня это недостижимо. Но шаблон подключают и к
 # управляемым базам стороннего провайдера, а там пароль какой дали.
-config.set_main_option(
-    "sqlalchemy.url", settings.async_database_url.replace("%", "%%")
-)
+config.set_main_option("sqlalchemy.url", settings.async_database_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
