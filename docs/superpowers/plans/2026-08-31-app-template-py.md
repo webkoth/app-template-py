@@ -2798,6 +2798,13 @@ class RateLimiter:
         # чистку, только слабее — и потому его легко не заметить.
         # Обёртка list обязательна: удаление во время обхода словаря
         # бросает RuntimeError.
+        #
+        # Вытеснение идёт по порядку вставки, а не по свежести, поэтому
+        # теоретически способно выбросить и живую блокировку: залив 100 000
+        # чужих ключей, можно снять чужой запрет. Экономика делает это
+        # бессмысленным — двадцать тысяч запросов ради одной лишней попытки
+        # против пяти бесплатных через пятнадцать минут ожидания, — но
+        # свойство стоит знать, а не обнаружить.
         for stale in list(islice(self._hits, excess)):
             del self._hits[stale]
 
@@ -3521,6 +3528,34 @@ async def test_logout_clears_cookie(client, login_as):
     assert (await client.get("/api/auth/me")).status_code == 401
 
 
+async def test_budget_is_taken_before_password_check(client, make_user):
+    # Порядок вызовов, а не их наличие. Между проверкой бюджета и записью
+    # неудачи стоит await на scrypt, и при обратном порядке цикл событий
+    # пропускает в ворота все ждущие запросы разом: сорок одновременных
+    # попыток дают сорок проверок пароля при пределе пять.
+    #
+    # Проверяется тем, что после единственной неудачной попытки счётчик уже
+    # не пуст — то есть неудача записана, а не ждёт исхода проверки.
+    from app.core.rate_limit import login_limiter
+
+    await make_user(login="ivan")
+    login_limiter.reset("ivan")
+    await client.post("/api/auth/login", json={"login": "ivan", "password": "мимо"})
+    assert login_limiter.size() > 0
+
+
+async def test_successful_login_clears_counter(client, make_user):
+    # Обратная сторона: бюджет занимается до проверки, поэтому успешный
+    # вход обязан счётчик обнулить — иначе честный пользователь копил бы
+    # отметки на каждом входе и однажды заперся бы сам.
+    from app.core.rate_limit import login_limiter
+
+    await make_user(login="ivan")
+    login_limiter.reset("ivan")
+    await client.post("/api/auth/login", json={"login": "ivan", "password": "секрет"})
+    assert login_limiter.retry_after("ivan") == 0
+
+
 async def test_login_records_last_login(client, session, make_user):
     await make_user(login="ivan")
     await client.post("/api/auth/login", json={"login": "ivan", "password": "секрет"})
@@ -3774,7 +3809,7 @@ async def me(user: CurrentUserDep) -> CurrentUserResponse:
 - [ ] **Шаг 6: Запустить тест (после задачи 22)**
 
 Run: `cd backend && uv run pytest tests/api/test_auth.py -v`
-Expected: PASS, 10 passed
+Expected: PASS, 12 passed
 
 - [ ] **Шаг 7: Коммит**
 
