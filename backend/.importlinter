@@ -18,3 +18,13 @@ forbidden_modules =
     asyncpg
     alembic
     fastapi
+
+[importlinter:contract:features-are-independent]
+name = фичи не лезут друг другу внутрь
+type = independence
+modules =
+    app.features.auth
+    app.features.users
+    app.features.expenses
+    app.features.audit
+    app.features.meta
