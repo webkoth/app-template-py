@@ -2927,13 +2927,10 @@ Create `backend/tests/unit/test_errors.py`:
 import json
 
 import pytest
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
-
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
-
-SURROGATE_JSON = '"\\ud800"'
+from pydantic import BaseModel, Field, ValidationError
 
 from app.core.errors import (
     FALLBACK_MESSAGE,
@@ -2942,6 +2939,8 @@ from app.core.errors import (
     register_error_handlers,
     validation_error_to_envelope,
 )
+
+SURROGATE_JSON = '"\\ud800"'
 
 
 class Sample(BaseModel):
@@ -3124,7 +3123,10 @@ class TestRegisteredHandlers:
         assert response.json()["field"] == "title"
 
     def test_unparseable_body_answers_envelope(self):
-        # Раньше отвечало {"detail": ...} — другой формой, мимо конверта.
+        # Непарсимое тело идёт не через HTTPException, а через ошибку
+        # разбора схемы с типом json_invalid — и получает переведённый
+        # текст. Проверяется здесь другое: что смещение в байтах, которое
+        # лежит в loc вместо имени поля, не становится этим именем.
         response = self.build().post(
             "/schema",
             content=b"{not json",
