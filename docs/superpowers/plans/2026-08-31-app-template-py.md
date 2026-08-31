@@ -3423,6 +3423,7 @@ git commit -m "feat: единый конверт ошибки и обработ�
 """
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -3483,8 +3484,14 @@ async def get_current_user(
 CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
 
 
-def require_role(minimum: Role):  # noqa: ANN201 — возвращает зависимость FastAPI
-    """Фабрика зависимости: не ниже указанной роли."""
+def require_role(minimum: Role) -> Callable[[CurrentUser], Awaitable[CurrentUser]]:
+    """Фабрика зависимости: не ниже указанной роли.
+
+    Тип возврата выписан полностью, а не подавлен `# noqa`. Подавление тут
+    не работает дважды: `ANN` в наборе правил не включён, поэтому ruff
+    ругается уже на само подавление (RUF100), а mypy на комментарии ruff и
+    вовсе не смотрит и требует аннотацию. Проверено — красными были оба.
+    """
 
     async def dependency(user: CurrentUserDep) -> CurrentUser:
         if not has_rank(user.role, minimum):
