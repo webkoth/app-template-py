@@ -197,7 +197,10 @@ class TestRegisteredHandlers:
         assert response.json()["field"] == "title"
 
     def test_unparseable_body_answers_envelope(self):
-        # Раньше отвечало {"detail": ...} — другой формой, мимо конверта.
+        # Непарсимое тело идёт не через HTTPException, а через ошибку
+        # разбора схемы с типом json_invalid — и получает переведённый
+        # текст. Проверяется здесь другое: что смещение в байтах, которое
+        # лежит в loc вместо имени поля, не становится этим именем.
         response = self.build().post(
             "/schema",
             content=b"{not json",
