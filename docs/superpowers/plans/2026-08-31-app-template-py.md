@@ -1284,6 +1284,8 @@ git commit -m "feat: роли и сравнение по рангу"
 Create `backend/tests/unit/test_expenses.py`:
 
 ```python
+import pytest
+
 from app.domain.expenses import CATEGORIES, CategoryTotal, totals_by_category
 
 
@@ -1324,10 +1326,26 @@ class TestTotals:
         assert result[1].share == 0.25
 
     def test_zero_total_gives_zero_shares(self):
-        # Деление на ноль: суммы могут в принципе взаимно погаситься.
-        # Без этой ветки экран сводки падал бы на пустяке.
-        result = totals_by_category([("Софт", 100), ("Аренда", -100)])
-        assert all(r.share == 0.0 for r in result)
+        # Деление на ноль: все суммы могут оказаться нулевыми. Без этой
+        # ветки экран сводки падал бы на пустяке.
+        #
+        # Сравнение со всем списком, а не `all(r.share == 0 for r in ...)`:
+        # такая проверка истинна и на пустом списке, поэтому не заметила бы
+        # реализацию, которая при нулевом итоге просто возвращает ничего.
+        # Проверено мутацией — не заметила.
+        assert totals_by_category([("Софт", 0), ("Аренда", 0)]) == [
+            CategoryTotal(category="Аренда", total_minor=0, share=0.0),
+            CategoryTotal(category="Софт", total_minor=0, share=0.0),
+        ]
+
+    def test_negative_amount_rejected(self):
+        # Доля от знакопеременного набора перестаёт быть долей: при суммах
+        # −5000 и 10000 получаются доли −100 % и 200 %. Коварство в том, что
+        # сумма долей при этом остаётся ровно единицей, и проверка «доли
+        # сходятся» такую картину пропускает, а круговая диаграмма рисует
+        # сектор в 3600 градусов.
+        with pytest.raises(ValueError):
+            totals_by_category([("Софт", -5000), ("Аренда", 10000)])
 ```
 
 - [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
@@ -1365,7 +1383,21 @@ def totals_by_category(rows: list[tuple[str, int]]) -> list[CategoryTotal]:
     Принимает пары «категория, копейки» — не модели SQLAlchemy: доменная
     логика не должна знать, откуда пришли данные, иначе её не проверить без
     базы.
+
+    Отрицательные суммы отвергаются. Доля от знакопеременного набора
+    перестаёт быть долей: она вылезает за сто процентов и уходит в минус, а
+    сумма долей при этом остаётся равной единице — то есть проверка «доли
+    сходятся» такую картину пропустит, и круговая диаграмма нарисует сектор
+    в 3600 градусов. Это ровно тот случай, когда молчаливая неправда хуже
+    отказа. Запрет отрицательных расходов держит сервис фичи; здесь речь о
+    другом — о контракте самой функции, который на таких данных нарушен.
     """
+    for category, minor in rows:
+        if minor < 0:
+            raise ValueError(
+                f"отрицательная сумма в категории «{category}»: доля не определена"
+            )
+
     sums: dict[str, int] = {}
     for category, minor in rows:
         sums[category] = sums.get(category, 0) + minor
@@ -1388,7 +1420,7 @@ def totals_by_category(rows: list[tuple[str, int]]) -> list[CategoryTotal]:
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_expenses.py -v`
-Expected: PASS, 8 passed
+Expected: PASS, 9 passed
 
 - [ ] **Шаг 5: Прогнать все проверки бэкенда**
 
