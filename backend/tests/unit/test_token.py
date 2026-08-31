@@ -68,6 +68,20 @@ def test_expired_token_rejected():
     assert verify_session_token(old, SECRET, now_ms=NOW) is None
 
 
+def test_future_token_rejected():
+    # Время выдачи ставит сервер, но его часы могут скакнуть вперёд.
+    # Односторонняя проверка срока такие токены не ловит, и они живут
+    # вечно — то есть проверка срока перестаёт что-либо значить.
+    ahead = sign_session_token("admin", NOW + 10 * 365 * 24 * 3600 * 1000, SECRET)
+    assert verify_session_token(ahead, SECRET, now_ms=NOW) is None
+
+
+def test_small_clock_skew_tolerated():
+    # Секундная разница часов не повод отвергать вход.
+    slightly_ahead = sign_session_token("admin", NOW + 30 * 1000, SECRET)
+    assert verify_session_token(slightly_ahead, SECRET, now_ms=NOW) is not None
+
+
 def test_token_at_age_limit_still_accepted():
     issued = NOW - SESSION_MAX_AGE_SECONDS * 1000
     edge = sign_session_token("admin", issued, SECRET)

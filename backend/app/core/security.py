@@ -81,6 +81,10 @@ _SEPARATOR = "\n"
 # верной навсегда.
 SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
+# Допуск на расхождение часов. Нужен, чтобы отвергать токены «из будущего»,
+# не придираясь к секундной разнице.
+CLOCK_SKEW_SECONDS = 60
+
 
 def _b64encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -138,7 +142,16 @@ def verify_session_token(
     # ждать неделю.
     if now_ms is None:
         now_ms = int(time.time() * 1000)
-    if now_ms - issued_at_ms > SESSION_MAX_AGE_SECONDS * 1000:
+    age_ms = now_ms - issued_at_ms
+    if age_ms > SESSION_MAX_AGE_SECONDS * 1000:
+        return None
+    # Забор с обеих сторон. Односторонняя проверка ловит только прошлое, а
+    # токен с временем выдачи в будущем живёт вечно. Подделать его без
+    # секрета нельзя, но время ставит сервер, и его часы могут скакнуть
+    # вперёд — поправкой NTP или восстановлением машины из снимка. Выданные
+    # в этот момент токены переживут семь дней, и проверка срока перестанет
+    # что-либо значить именно тогда, когда понадобится.
+    if age_ms < -CLOCK_SKEW_SECONDS * 1000:
         return None
 
     return login, issued_at_ms
