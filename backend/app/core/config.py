@@ -19,15 +19,18 @@ class Settings(BaseSettings):
         # и падать из-за них приложение не должно.
         extra="ignore",
         case_sensitive=False,
+        # Имена полей в ошибках валидации — заглавными, то есть ровно так, как
+        # переменная называется в .env. Без этого pydantic пишет питоновское
+        # имя (app_auth_secret), и человек ищет в .env строку, которой там нет.
+        # populate_by_name оставляет возможность создать Settings и по
+        # питоновскому имени — этим пользуются тесты.
+        alias_generator=str.upper,
+        populate_by_name=True,
     )
 
     database_url: str = Field(description="Адрес PostgreSQL")
     app_env: Literal["local", "production"] = "local"
-    # validation_alias задан явно: без него pydantic пишет в ошибке валидации
-    # питоновское имя поля (app_auth_secret), а не имя переменной окружения
-    # (APP_AUTH_SECRET), и сообщение об отсутствующем секрете не помогает
-    # понять, какую переменную завести на контуре.
-    app_auth_secret: str = Field(min_length=32, validation_alias="APP_AUTH_SECRET")
+    app_auth_secret: str = Field(min_length=32)
     cookie_secure: bool = False
 
     # Отдельная база для e2e: тесты создают и меняют данные, и делать это в
