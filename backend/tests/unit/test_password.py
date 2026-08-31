@@ -31,6 +31,14 @@ def test_garbage_stored_value_rejected_without_raising():
     assert verify_password("тайна", "") is False
 
 
+def test_null_password_hash_rejected():
+    # password_hash объявлен nullable намеренно: NULL означает «вход
+    # невозможен». Значение приходит прямо из колонки, поэтому None здесь
+    # не порча данных, а штатный случай, и отвечать на него надо отказом, а
+    # не исключением.
+    assert verify_password("тайна", None) is False  # type: ignore[arg-type]
+
+
 def test_empty_password_still_hashes():
     # Пустой пароль — не ошибка уровня хеширования: политику паролей
     # определяет сервис, а не эта функция.

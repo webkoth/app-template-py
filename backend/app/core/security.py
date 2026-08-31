@@ -40,6 +40,14 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, stored: str) -> bool:
     """Сверяет пароль с сохранённой строкой. Битая строка — отказ, не сбой."""
+    # Пустое значение и None отсеиваются первыми. NULL в password_hash —
+    # штатное состояние («вход невозможен»), а не порча данных, и приходит
+    # оно прямо из nullable-колонки. Без этой строки попытка входа такого
+    # пользователя даёт AttributeError и пятисотку вместо отказа. В
+    # app-template-ts эта же проверка стоит первой строкой verifyPassword.
+    if not stored:
+        return False
+
     try:
         algo, n_raw, salt_hex, digest_hex = stored.split("$")
         if algo != "scrypt":
