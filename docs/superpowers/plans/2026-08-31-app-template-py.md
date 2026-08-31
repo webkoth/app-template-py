@@ -1909,7 +1909,19 @@ from app.features.expenses.models import Expense  # noqa: F401
 from app.features.users.models import User  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.async_database_url)
+# %% вместо %: set_main_option кладёт значение в ConfigParser, а тот считает
+# одиночный % началом подстановки. Пароль с процентом даёт не «не удалось
+# подключиться», а ValueError с текстом «invalid interpolation syntax»,
+# внутри которого — вся строка подключения целиком, вместе с паролем. То
+# есть падает не только миграция: секрет уезжает в лог деплоя, обходя
+# санитизацию, ради которой в app/core/config.py построен load_settings.
+#
+# Провижинер генерирует пароль через `openssl rand -hex`, где процента не
+# бывает, поэтому сегодня это недостижимо. Но шаблон подключают и к
+# управляемым базам стороннего провайдера, а там пароль какой дали.
+config.set_main_option(
+    "sqlalchemy.url", settings.async_database_url.replace("%", "%%")
+)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
