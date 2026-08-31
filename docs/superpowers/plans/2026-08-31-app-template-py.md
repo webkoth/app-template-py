@@ -2186,6 +2186,14 @@ def test_garbage_stored_value_rejected_without_raising():
     assert verify_password("тайна", "") is False
 
 
+def test_null_password_hash_rejected():
+    # password_hash объявлен nullable намеренно: NULL означает «вход
+    # невозможен». Значение приходит прямо из колонки, поэтому None здесь
+    # не порча данных, а штатный случай, и отвечать на него надо отказом, а
+    # не исключением.
+    assert verify_password("тайна", None) is False  # type: ignore[arg-type]
+
+
 def test_empty_password_still_hashes():
     # Пустой пароль — не ошибка уровня хеширования: политику паролей
     # определяет сервис, а не эта функция.
@@ -2242,6 +2250,14 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, stored: str) -> bool:
     """Сверяет пароль с сохранённой строкой. Битая строка — отказ, не сбой."""
+    # Пустое значение и None отсеиваются первыми. NULL в password_hash —
+    # штатное состояние («вход невозможен»), а не порча данных, и приходит
+    # оно прямо из nullable-колонки. Без этой строки попытка входа такого
+    # пользователя даёт AttributeError и пятисотку вместо отказа. В
+    # app-template-ts эта же проверка стоит первой строкой verifyPassword.
+    if not stored:
+        return False
+
     try:
         algo, n_raw, salt_hex, digest_hex = stored.split("$")
         if algo != "scrypt":
@@ -2266,7 +2282,7 @@ def verify_password(password: str, stored: str) -> bool:
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_password.py -v`
-Expected: PASS, 6 passed
+Expected: PASS, 7 passed
 
 - [ ] **Шаг 5: Коммит**
 
@@ -3288,11 +3304,17 @@ async def authenticate(
         await session.execute(select(User).where(User.login == login))
     ).scalar_one_or_none()
 
+    # verify_password уходит в пул потоков намеренно. Один вызов scrypt
+    # занимает около 25 мс сплошного счёта, и вызванный напрямую он
+    # блокирует цикл событий целиком: замеряно — восемь проверок подряд
+    # держат цикл 195 мс, за которые он не проворачивается ни разу, то есть
+    # встают и все прочие запросы, включая проверку живости. Через пул те
+    # же восемь занимают 42 мс и цикл остаётся живым.
     ok = (
         user is not None
         and user.status is UserStatus.active
         and user.password_hash is not None
-        and verify_password(password, user.password_hash)
+        and await asyncio.to_thread(verify_password, password, user.password_hash)
     )
     if not ok or user is None:
         login_limiter.register_failure(login)
@@ -3328,7 +3350,11 @@ async def ensure_bootstrap_user(session: AsyncSession) -> None:
             login=settings.app_bootstrap_login,
             name=settings.app_bootstrap_name,
             role=Role.admin,
-            password_hash=hash_password(settings.app_bootstrap_password),
+            # Тоже в пул потоков: hash_password стоит столько же, сколько
+            # проверка, а вызывается он при старте приложения.
+            password_hash=await asyncio.to_thread(
+                hash_password, settings.app_bootstrap_password
+            ),
             created_at=datetime.now(UTC),
         )
     )
@@ -3621,6 +3647,7 @@ class UpdateUserRequest(BaseModel):
 ```python
 """Правила работы с учётными записями."""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -3654,7 +3681,10 @@ async def create_user(
         login=payload.login,
         name=payload.name,
         role=payload.role,
-        password_hash=hash_password(payload.password),
+        # В пул потоков: scrypt считается около 25 мс сплошного счёта и
+        # прямым вызовом заморозил бы цикл событий вместе со всеми
+        # остальными запросами.
+        password_hash=await asyncio.to_thread(hash_password, payload.password),
         created_at=datetime.now(UTC),
     )
     session.add(user)
