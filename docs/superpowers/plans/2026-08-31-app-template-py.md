@@ -453,7 +453,9 @@ class Settings(BaseSettings):
         из одного пробела не пуст для bool(), и без него сентинел молча
         создал бы рабочую учётку с паролем " ".
         """
-        return bool(self.app_bootstrap_login.strip() and self.app_bootstrap_password.strip())
+        return bool(
+            self.app_bootstrap_login.strip() and self.app_bootstrap_password.strip()
+        )
 
     @property
     def async_database_url(self) -> str:
@@ -463,8 +465,21 @@ class Settings(BaseSettings):
         и psql. Драйвер подставляется здесь, чтобы общий app-provision,
         которым пользуется и TS-шаблон, остался нетронутым.
         """
-        _, rest = self.database_url.split("://", 1)
-        return f"postgresql+asyncpg://{rest}"
+        return _with_async_driver(self.database_url)
+
+    @property
+    def async_database_url_e2e(self) -> str | None:
+        """То же для отдельной базы под тесты.
+
+        Тесты создают и удаляют схему целиком, поэтому идти в рабочую базу
+        им нельзя ни при каких условиях: после прогона там не осталось бы
+        таблиц, а alembic_version продолжал бы показывать head — то есть
+        приложение перестало бы стартовать, а миграции считали бы, что
+        накатывать нечего.
+        """
+        if not self.database_url_e2e:
+            return None
+        return _with_async_driver(self.database_url_e2e)
 
 
 def describe_validation_error(error: ValidationError) -> str:
@@ -500,6 +515,12 @@ def load_settings() -> Settings:
         return Settings()  # type: ignore[call-arg]
     except ValidationError as error:
         raise RuntimeError(describe_validation_error(error)) from None
+
+
+def _with_async_driver(url: str) -> str:
+    """Подставляет асинхронный драйвер, сохраняя остальную часть адреса."""
+    _, rest = url.split("://", 1)
+    return f"postgresql+asyncpg://{rest}"
 
 
 settings = load_settings()
@@ -3563,6 +3584,19 @@ API-тесты дешевле e2e на порядок и проверяют то
 ответов, форму ошибки, запись в журнал, отказ по роли. В эталоне этого слоя
 не было вовсе — его роль играли Playwright-сценарии.
 
+**Тесты идут в отдельную базу и громко падают, если она не задана.** Это не
+перестраховка: фикстура удаляет схему целиком, и при работе в рабочей базе
+после первого же `make check` там не остаётся таблиц, а `alembic_version`
+продолжает показывать head — приложение не стартует, а миграции считают,
+что накатывать нечего. Проверено: именно это и произошло при первом
+исполнении задачи, дважды.
+
+Разрушение при этом **частичное**, и оттого особенно путающее: удаляется
+только то, что попало в метаданные через цепочку импортов обвязки. Уцелели
+`expenses` и `audit_log`, потому что их модули обвязка не импортирует, — а
+с добавлением роутеров в задачах 20–22 они начали бы удаляться тоже, то
+есть поведение молча изменилось бы посреди фазы.
+
 **Files:**
 - Create: `backend/app/main.py`
 - Create: `backend/tests/conftest.py`
@@ -3623,21 +3657,38 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.core.db import Base, engine, get_session
+from app.core.config import settings
+from app.core.db import Base, get_session
 from app.core.security import hash_password
-from app.domain.roles import Role
 from app.core.users import User, UserStatus
+from app.domain.roles import Role
 from app.main import app
+
+# Отдельный движок под отдельную базу. Движок приложения здесь не годится:
+# фикстура ниже создаёт и удаляет схему целиком, а рабочая база после этого
+# осталась бы без таблиц при alembic_version на head — то есть приложение
+# перестало бы стартовать, а миграции считали бы, что накатывать нечего.
+# Проверено: именно это и произошло при первом прогоне.
+#
+# Отказ громкий и намеренный. Молчаливый откат на рабочую базу означал бы,
+# что забытая переменная окружения стоит человеку схемы.
+if not settings.async_database_url_e2e:
+    raise RuntimeError(
+        "DATABASE_URL_E2E не задан. Тесты создают и удаляют схему целиком и "
+        "поэтому идут только в отдельную базу — смотри .env.example."
+    )
+
+test_engine = create_async_engine(settings.async_database_url_e2e, pool_pre_ping=True)
 
 
 @pytest.fixture(scope="session", autouse=True)
 async def _schema() -> AsyncIterator[None]:
-    async with engine.begin() as conn:
+    async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
-    async with engine.begin() as conn:
+    async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
 
 
@@ -3649,7 +3700,7 @@ async def session() -> AsyncIterator[AsyncSession]:
     commit() по-настоящему: коммитится вложенная точка сохранения, а внешняя
     транзакция остаётся открытой и откатывается в конце теста.
     """
-    async with engine.connect() as connection:
+    async with test_engine.connect() as connection:
         transaction = await connection.begin()
         db = AsyncSession(
             bind=connection,
