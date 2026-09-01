@@ -3853,6 +3853,7 @@ git commit -m "test: сборка приложения и фикстуры API-�
 - Create: `backend/tests/api/test_auth.py`
 - Modify: `backend/tests/conftest.py` — фикстуры `new_session` и `_isolated_limiters`
 - Modify: `backend/app/core/rate_limit.py` — метод `clear()`
+- Modify: `backend/app/core/users.py` — тип `Login`
 
 - [ ] **Шаг 1: Написать падающий тест**
 
@@ -3915,6 +3916,17 @@ async def test_unknown_login_gives_same_message_as_wrong_password(client, make_u
     )
     # Разные тексты подсказали бы, какие логины существуют.
     assert wrong.json()["error"] == missing.json()["error"]
+
+
+async def test_login_ignores_case(client, make_user):
+    # Учётная запись заведена в нижнем регистре, человек набирает как
+    # привык. Без приведения он получил бы «неверный логин или пароль» на
+    # верном пароле и не понял бы, почему.
+    await make_user(login="ivan")
+    response = await client.post(
+        "/api/auth/login", json={"login": "IVAN", "password": "секрет"}
+    )
+    assert response.status_code == 200
 
 
 async def test_disabled_user_cannot_login(client, make_user):
@@ -4101,18 +4113,53 @@ def _isolated_limiters() -> None:
 Run: `cd backend && uv run pytest tests/api/test_auth.py`
 Expected: FAIL — маршрутов `/api/auth/*` ещё нет.
 
-- [ ] **Шаг 3: Написать `backend/app/features/auth/schemas.py`**
+- [ ] **Шаг 3: Добавить тип логина в `backend/app/core/users.py`**
+
+Над классом `User`:
+
+```python
+Login = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        to_lower=True,
+        min_length=1,
+        max_length=255,
+        pattern=r"^\S+$",
+    ),
+]
+```
+
+`Annotated` — из `typing`, `StringConstraints` — из `pydantic`.
+
+Тип живёт в `core`, а не в фиче входа, по требованию контракта
+независимости: его берут обе фичи — и вход, и учётные записи, — а импорт
+одной фичи из другой import-linter справедливо считает нарушением границы.
+Место выбрано не наугад: правило описывает ровно ту колонку, рядом с которой
+лежит.
+
+Что делает приведение к нижнему регистру. Без него `Иван` и `иван` — две
+разные учётные записи с общим бюджетом попыток: счётчик в
+`core/rate_limit.py` ключи casefold-ит, а поиск пользователя в базе регистр
+различает. Одно из двух обязано уступить, и уступает логин: у casefold в
+счётчике своё обоснование — без него пятибуквенный логин даёт 32 корзины
+вместо одной. Заодно исчезает главная неожиданность для человека: логин,
+набранный не в том регистре, перестаёт молча не подходить.
+
+`^\S+$` — без пробельных символов: перевод строки внутри сломал бы разбор
+токена, и такой пользователь молча не смог бы войти.
+
+- [ ] **Шаг 4: Написать `backend/app/features/auth/schemas.py`**
 
 ```python
 from pydantic import BaseModel, Field
 
+from app.core.users import Login
 from app.domain.roles import Role
 
 
 class LoginRequest(BaseModel):
-    # Логин без пробельных символов: перевод строки внутри сломал бы разбор
-    # токена, и такой пользователь молча не смог бы войти.
-    login: str = Field(min_length=1, max_length=255, pattern=r"^\S+$")
+    login: Login
     password: str = Field(min_length=1, max_length=1024)
 
 
@@ -4127,7 +4174,7 @@ class OkResponse(BaseModel):
     ok: bool = True
 ```
 
-- [ ] **Шаг 4: Написать `backend/app/features/auth/service.py`**
+- [ ] **Шаг 5: Написать `backend/app/features/auth/service.py`**
 
 ```python
 """Правила входа."""
@@ -4248,7 +4295,11 @@ async def ensure_bootstrap_user(session: AsyncSession) -> None:
         return
     session.add(
         User(
-            login=settings.app_bootstrap_login,
+            # Тот же вид, что и у логина из формы: без приведения запись,
+            # заведённая как APP_BOOTSTRAP_LOGIN=Admin, оказалась бы
+            # недостижимой — форма привела бы ввод к «admin», а в базе
+            # лежало бы «Admin».
+            login=settings.app_bootstrap_login.strip().lower(),
             name=settings.app_bootstrap_name,
             role=Role.admin,
             # Тоже в пул потоков: hash_password стоит столько же, сколько
@@ -4262,7 +4313,7 @@ async def ensure_bootstrap_user(session: AsyncSession) -> None:
     await session.commit()
 ```
 
-- [ ] **Шаг 5: Написать `backend/app/features/auth/router.py`**
+- [ ] **Шаг 6: Написать `backend/app/features/auth/router.py`**
 
 ```python
 from fastapi import APIRouter, Request, Response
@@ -4327,7 +4378,7 @@ async def me(user: CurrentUserDep) -> CurrentUserResponse:
     )
 ```
 
-- [ ] **Шаг 6: Подключить роутер и завести первую учётную запись**
+- [ ] **Шаг 7: Подключить роутер и завести первую учётную запись**
 
 В `backend/app/main.py` добавить роутер и жизненный цикл: первая учётная
 запись создаётся при старте, если таблица пуста.
@@ -4351,16 +4402,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 `lifespan=lifespan` передаётся в конструктор `FastAPI`, роутер
 подключается рядом с прочими.
 
-- [ ] **Шаг 7: Запустить тест**
+- [ ] **Шаг 8: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_auth.py -v`
-Expected: PASS, 13 passed
+Expected: PASS, 14 passed
 
-- [ ] **Шаг 8: Коммит**
+- [ ] **Шаг 9: Коммит**
 
 ```bash
 git add backend/app/features/auth/ backend/app/main.py \
-        backend/app/core/rate_limit.py \
+        backend/app/core/rate_limit.py backend/app/core/users.py \
         backend/tests/api/test_auth.py backend/tests/conftest.py
 git commit -m "feat: вход, выход и текущий пользователь"
 ```
@@ -4639,6 +4690,52 @@ async def test_duplicate_login_rejected_with_message(client, login_as):
     assert second.json()["field"] == "login"
 
 
+async def test_login_is_stored_lowercase(client, login_as):
+    # Регистр приводится схемой, а не только сравнивается при входе: иначе в
+    # базе жили бы `Ivan` и `ivan` как разные записи с общим бюджетом попыток.
+    await login_as(role=Role.admin, login="boss")
+    response = await client.post(
+        "/api/users",
+        json={
+            "login": "IVAN",
+            "name": "Иван",
+            "role": "viewer",
+            "password": "длинныйпароль",
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["login"] == "ivan"
+    # И повтор в другом регистре — тот же логин, а не второй.
+    second = await client.post(
+        "/api/users",
+        json={
+            "login": "Ivan",
+            "name": "Иван",
+            "role": "viewer",
+            "password": "длинныйпароль",
+        },
+    )
+    assert second.status_code == 400
+    assert second.json()["field"] == "login"
+
+
+async def test_blank_name_rejected(client, login_as):
+    # Пробелы проходят проверку длины, если обрезать после неё, и в списке
+    # пользователей появляется строка без имени — выглядит как сбой отрисовки.
+    await login_as(role=Role.admin, login="boss")
+    response = await client.post(
+        "/api/users",
+        json={
+            "login": "ivan",
+            "name": "   ",
+            "role": "viewer",
+            "password": "длинныйпароль",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["field"] == "name"
+
+
 async def test_all_digit_password_rejected(client, login_as):
     # Восемь цифр проходят по длине, но это дата или телефон — то, что
     # подбирают первым.
@@ -4737,10 +4834,11 @@ Expected: FAIL — маршрутов `/api/users` ещё нет.
 ```python
 import uuid
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from app.core.users import UserStatus
+from app.core.users import Login, UserStatus
 from app.domain.roles import Role
 
 # Восемь символов — не про стойкость, а про то, чтобы не заводили «123».
@@ -4765,8 +4863,15 @@ class UserOut(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
-    login: str = Field(min_length=1, max_length=255, pattern=r"^\S+$")
-    name: str = Field(min_length=1, max_length=255)
+    # Тот же тип, что и у формы входа: логин хранится в нижнем регистре,
+    # иначе `Иван` и `иван` стали бы двумя записями с общим бюджетом попыток.
+    login: Login
+    # Обрезка ДО проверки длины. При `Field(min_length=1)` имя из одних
+    # пробелов проходит проверку и ложится в базу пустым — в списке
+    # пользователей такая строка выглядит как сбой отрисовки.
+    name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+    ]
     role: Role
     password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=1024)
 
@@ -4956,7 +5061,7 @@ app.include_router(users_router, prefix="/api")
 - [ ] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_users.py -v`
-Expected: PASS, 13 passed
+Expected: PASS, 15 passed
 
 - [ ] **Шаг 8: Коммит**
 
@@ -5071,6 +5176,15 @@ async def test_amount_over_int4_rejected_with_readable_message(client, login_as)
     assert "предельной" in response.json()["error"]
 
 
+async def test_blank_title_rejected(client, login_as):
+    # Пробелы проходят проверку длины, если обрезать после неё, и в списке
+    # расходов появляется строка без назначения.
+    await login_as(role=Role.editor, login="ivan")
+    response = await client.post("/api/expenses", json={**VALID, "title": "   "})
+    assert response.status_code == 400
+    assert response.json()["field"] == "title"
+
+
 async def test_unknown_category_rejected(client, login_as):
     await login_as(role=Role.editor)
     response = await client.post("/api/expenses", json={**VALID, "category": "Ремонт"})
@@ -5106,9 +5220,9 @@ Expected: FAIL — маршрутов `/api/expenses` ещё нет.
 ```python
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 # Категории перечислены здесь литералами намеренно. Literal[CATEGORIES] из
 # переменной в рантайме работает, но mypy такой формы не принимает, и под
@@ -5141,7 +5255,11 @@ class CreateExpenseRequest(BaseModel):
     # Дата и сумма приходят строками и разбираются доменом: разбор — правило
     # предметной области, и он обязан быть авторитетным на сервере.
     date: str = Field(min_length=1)
-    title: str = Field(min_length=1, max_length=255)
+    # Обрезка ДО проверки длины: при `Field(min_length=1)` назначение из
+    # одних пробелов проходит и ложится в базу пустым.
+    title: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+    ]
     category: Category
     amount: str = Field(min_length=1)
 
@@ -5205,7 +5323,8 @@ async def create_expense(
 
     expense = Expense(
         date=date,
-        title=payload.title.strip(),
+        # Без .strip(): обрезает схема, и правило живёт в одном месте.
+        title=payload.title,
         category=payload.category,
         amount_minor=amount_minor,
         created_at=datetime.now(UTC),
@@ -5312,7 +5431,7 @@ app.include_router(expenses_router, prefix="/api")
 - [ ] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_expenses.py -v`
-Expected: PASS, 12 passed
+Expected: PASS, 13 passed
 
 - [ ] **Шаг 8: Коммит**
 
