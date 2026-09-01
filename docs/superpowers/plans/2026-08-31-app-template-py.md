@@ -3851,7 +3851,8 @@ git commit -m "test: сборка приложения и фикстуры API-�
 - Create: `backend/app/features/auth/service.py`
 - Create: `backend/app/features/auth/router.py`
 - Create: `backend/tests/api/test_auth.py`
-- Modify: `backend/tests/conftest.py` — фикстура `new_session`
+- Modify: `backend/tests/conftest.py` — фикстуры `new_session` и `_isolated_limiters`
+- Modify: `backend/app/core/rate_limit.py` — метод `clear()`
 
 - [ ] **Шаг 1: Написать падающий тест**
 
@@ -3859,14 +3860,16 @@ Create `backend/tests/api/test_auth.py`:
 
 ```python
 import asyncio
+import time
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import select
 
 from app.core.errors import RuleViolation
 from app.core.security import AUTH_COOKIE
-from app.domain.roles import Role
 from app.core.users import User, UserStatus
+from app.domain.roles import Role
 
 
 async def test_login_sets_cookie(client, make_user):
@@ -3885,7 +3888,12 @@ async def test_cookie_is_httponly_and_samesite(client, make_user):
     )
     header = response.headers["set-cookie"]
     assert "HttpOnly" in header
-    assert "SameSite=Lax" in header
+    # Сравнение без учёта регистра. Starlette пишет значение ровно так, как
+    # его передали, а передать «Lax» нельзя: параметр объявлен как
+    # Literal["lax", "strict", "none"], и проверка типов такое не пропустит.
+    # На поведение регистр не влияет — по RFC 6265bis значение атрибута
+    # разбирается без учёта регистра, и браузеры читают «lax».
+    assert "samesite=lax" in header.lower()
 
 
 async def test_wrong_password_rejected(client, make_user):
@@ -3978,6 +3986,27 @@ async def test_budget_is_taken_before_password_check(new_session):
     ), messages
 
 
+async def test_denial_is_not_faster_than_the_floor(new_session):
+    # Выравнивание времени ответа — единственная защита от перебора логинов
+    # по времени, и без этой проверки её потеря молчалива: отказ продолжает
+    # быть отказом, тесты остаются зелёными, а оракул возвращается.
+    #
+    # Отказ по несуществующему логину scrypt не считает и без выравнивания
+    # возвращается за единицы миллисекунд; отказ по неверному паролю — за
+    # десятки. Проверяется нижняя граница, а не разница между ветками:
+    # граница не зависит от загрузки машины и потому не флапает.
+    from app.core.rate_limit import address_limiter, login_limiter
+    from app.features.auth.service import MIN_RESPONSE_SECONDS, authenticate
+
+    login_limiter.reset("призрак")
+    address_limiter.reset("10.0.0.2")
+    started = time.monotonic()
+    async with new_session() as db:
+        with pytest.raises(RuleViolation):
+            await authenticate(db, "призрак", "мимо", "10.0.0.2")
+    assert time.monotonic() - started >= MIN_RESPONSE_SECONDS
+
+
 async def test_successful_login_clears_counter(client, make_user):
     # Обратная сторона: бюджет занимается до проверки, поэтому успешный
     # вход обязан счётчик обнулить — иначе честный пользователь копил бы
@@ -4036,6 +4065,37 @@ def new_session() -> Callable[[], AsyncSession]:
 
 `Callable` добавляется в импорт из `collections.abc`.
 
+Туда же — автофикстура, которая чистит счётчики попыток перед каждым тестом,
+и метод `clear()` в `backend/app/core/rate_limit.py`, на который она опирается:
+
+```python
+    def clear(self) -> None:
+        """Забыть все отметки. То же, что делает перезапуск процесса."""
+        self._hits.clear()
+```
+
+```python
+@pytest.fixture(autouse=True)
+def _isolated_limiters() -> None:
+    """Счётчики попыток — глобалы модуля, и состояние течёт между тестами.
+
+    Подменить объект в фикстуре нельзя: сервис входа связывает имена при
+    импорте (`from app.core.rate_limit import login_limiter`), и подмена
+    атрибута модуля до него не дойдёт. Остаётся чистить содержимое.
+
+    Без этого порядок тестов влияет на результат. Показано мутацией: удаление
+    одной строки `login_limiter.reset(login)` в сервисе уронило посторонний
+    тест про `/me` — тот всего лишь входил третьим по счёту. Пока успешный
+    вход обнуляет оба счётчика, всё сходится само; первый же файл с длинной
+    серией неудачных входов начнёт ронять соседей по порядку.
+    """
+    login_limiter.clear()
+    address_limiter.clear()
+```
+
+`login_limiter` и `address_limiter` импортируются в шапке `conftest.py` из
+`app.core.rate_limit`.
+
 - [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/api/test_auth.py`
@@ -4085,8 +4145,8 @@ from app.core.config import settings
 from app.core.errors import RuleViolation
 from app.core.rate_limit import address_limiter, login_limiter
 from app.core.security import hash_password, sign_session_token, verify_password
-from app.domain.roles import Role
 from app.core.users import User, UserStatus
+from app.domain.roles import Role
 
 logger = logging.getLogger(__name__)
 
@@ -4294,12 +4354,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 - [ ] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_auth.py -v`
-Expected: PASS, 12 passed
+Expected: PASS, 13 passed
 
 - [ ] **Шаг 8: Коммит**
 
 ```bash
 git add backend/app/features/auth/ backend/app/main.py \
+        backend/app/core/rate_limit.py \
         backend/tests/api/test_auth.py backend/tests/conftest.py
 git commit -m "feat: вход, выход и текущий пользователь"
 ```
@@ -4512,8 +4573,8 @@ Create `backend/tests/api/test_users.py`:
 from sqlalchemy import select
 
 from app.core.audit import AuditLog
-from app.domain.roles import Role
 from app.core.users import User, UserStatus
+from app.domain.roles import Role
 
 
 async def test_list_requires_admin(client, login_as):
@@ -4679,8 +4740,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.domain.roles import Role
 from app.core.users import UserStatus
+from app.domain.roles import Role
 
 # Восемь символов — не про стойкость, а про то, чтобы не заводили «123».
 # Настоящую защиту даёт ограничение попыток входа.
