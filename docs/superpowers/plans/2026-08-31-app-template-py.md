@@ -6232,7 +6232,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 # Категории перечислены здесь литералами намеренно. Literal[CATEGORIES] из
 # переменной в рантайме работает, но mypy такой формы не принимает, и под
-# type: ignore тип схлопывается в Any — то есть проверка, ради которой
+# «type: ignore» тип схлопывается в Any — то есть проверка, ради которой
 # Literal и нужен, перестаёт существовать.
 #
 # Расхождение с app/domain/expenses.py ловит тест
@@ -6355,9 +6355,7 @@ async def delete_expense(
     expense = await session.get(Expense, expense_id)
     if expense is None:
         raise LookupError("Расход не найден")
-    write_audit(
-        session, actor, "delete", "Expense", str(expense.id), expense.title
-    )
+    write_audit(session, actor, "delete", "Expense", str(expense.id), expense.title)
     await session.delete(expense)
     await session.commit()
 ```
@@ -6396,9 +6394,7 @@ async def summary(
     session: SessionDep, _: CurrentUser = ViewerDep
 ) -> list[CategoryTotalOut]:
     return [
-        CategoryTotalOut(
-            category=t.category, total_minor=t.total_minor, share=t.share
-        )
+        CategoryTotalOut(category=t.category, total_minor=t.total_minor, share=t.share)
         for t in await service.summary(session)
     ]
 
@@ -6423,8 +6419,16 @@ async def delete_expense(
     return {"ok": True}
 ```
 
-Маршрут `/summary` объявлен **до** `/{expense_id}`: иначе FastAPI сопоставит
-слово «summary» с параметром пути и попробует разобрать его как UUID.
+Маршрут `/summary` объявлен **до** `/{expense_id}`. Сегодня это ни на что не
+влияет: по `/{expense_id}` объявлено только удаление, и маршруты
+различаются методом — проверено перестановкой, все проверки остаются
+зелёными. Порядок стоит здесь на будущее: как только появится чтение
+расхода по идентификатору, `GET /{expense_id}` начнёт перехватывать слово
+«summary» и пытаться разобрать его как UUID.
+
+Формулировка важна именно потому, что это образец: обоснование, описывающее
+опасность, которой сейчас нет, читается как проверенное правило — и
+однажды его переставят, не поняв, чем рискуют.
 
 - [ ] **Шаг 6: Подключить роутер в `backend/app/main.py`**
 
