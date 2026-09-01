@@ -39,6 +39,12 @@ if (!DATABASE_URL_E2E) {
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,
+  // Один воркер. fullyParallel: false выключает параллельность ВНУТРИ файла,
+  // но не между файлами: два спека шли бы одновременно в один сервер и одну
+  // базу. Сегодня они друг другу не мешают — данные каждый заводит свои, —
+  // но первая же проверка общего счётчика или суммы начнёт мигать, и
+  // причину будут искать в ней, а не здесь.
+  workers: 1,
   use: { baseURL: `http://127.0.0.1:${PORT}` },
   webServer: {
     // alembic перед uvicorn обязателен: база e2e отдельная и пустая, а
@@ -51,7 +57,12 @@ export default defineConfig({
       `npm run build && cd ../backend && uv run alembic upgrade head && ` +
       `uv run uvicorn app.main:app --port ${PORT}`,
     url: `http://127.0.0.1:${PORT}/api/health`,
-    reuseExistingServer: !process.env.CI,
+    // Переиспользования нет и локально. Оно выглядит удобством, а работает
+    // ловушкой: оставшийся на порту uvicorn (скажем, после Ctrl+C) Playwright
+    // подхватывает молча и ПРОПУСКАЕТ `npm run build` — то есть зелёный
+    // прогон проверяет прошлую сборку. Отказ «порт занят» громкий и честный,
+    // а сборка занимает доли секунды.
+    reuseExistingServer: false,
     timeout: 180_000,
     env: {
       // Отдельная база: тесты создают и меняют данные, и делать это в

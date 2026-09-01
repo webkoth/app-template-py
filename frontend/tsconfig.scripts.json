@@ -28,5 +28,9 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["scripts"]
+  // Сюда же — обвязка сквозных тестов. Без неё playwright.config.ts и
+  // tests/e2e не входят ни в один проект tsconfig: `tsc -b` их не видит, а
+  // Playwright типы не проверяет вовсе, и опечатка в сценарии всплывает
+  // только на прогоне.
+  "include": ["scripts", "playwright.config.ts", "tests"]
 }

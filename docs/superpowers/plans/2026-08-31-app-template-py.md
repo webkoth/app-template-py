@@ -3765,17 +3765,13 @@ app = FastAPI(
 
 register_error_handlers(app)
 ```
-
-- [ ] **Шаг 2: Написать `backend/tests/conftest.py`**
-
-```python
 """Фикстуры API-тестов.
 
 Каждый тест идёт в своей транзакции и откатывается: база остаётся чистой,
 и порядок тестов ни на что не влияет.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 
 import pytest
@@ -3785,6 +3781,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.config import settings
 from app.core.db import Base, get_session
+from app.core.rate_limit import address_limiter, login_limiter
 from app.core.security import hash_password
 from app.core.users import User, UserStatus
 from app.domain.roles import Role
@@ -3830,6 +3827,18 @@ test_engine = create_async_engine(settings.async_database_url_e2e, pool_pre_ping
 @pytest.fixture(scope="session", autouse=True)
 async def _schema() -> AsyncIterator[None]:
     async with test_engine.begin() as conn:
+        # Схема сбрасывается и ПЕРЕД прогоном, а не только после. Эту же базу
+        # использует Playwright: он накатывает схему миграциями и оставляет
+        # после себя строки, которые создали сценарии. create_all их не
+        # трогает — таблицы уже есть, — и тесты, считающие записи или
+        # заводящие учётную запись «admin», падают на чужих данных: после
+        # прогона e2e `make check` давал 11 отказов в tests/api при
+        # неизменном коде. Воспроизведено.
+        #
+        # IF EXISTS: на новой базе схемы public может не быть вовсе, и без
+        # него первый же прогон падал бы на подготовке.
+        await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with test_engine.begin() as conn:
@@ -3850,6 +3859,24 @@ async def _schema() -> AsyncIterator[None]:
         await conn.execute(text("CREATE SCHEMA public"))
 
 
+@pytest.fixture(autouse=True)
+def _isolated_limiters() -> None:
+    """Счётчики попыток — глобалы модуля, и состояние течёт между тестами.
+
+    Подменить объект в фикстуре нельзя: сервис входа связывает имена при
+    импорте (`from app.core.rate_limit import login_limiter`), и подмена
+    атрибута модуля до него не дойдёт. Остаётся чистить содержимое.
+
+    Без этого порядок тестов влияет на результат. Показано мутацией: удаление
+    одной строки `login_limiter.reset(login)` в сервисе уронило посторонний
+    тест про `/me` — тот всего лишь входил третьим по счёту. Пока успешный
+    вход обнуляет оба счётчика, всё сходится само; первый же файл с длинной
+    серией неудачных входов начнёт ронять соседей по порядку.
+    """
+    login_limiter.clear()
+    address_limiter.clear()
+
+
 @pytest.fixture
 async def session() -> AsyncIterator[AsyncSession]:
     """Сессия внутри внешней транзакции, которая всегда откатывается.
@@ -3868,6 +3895,21 @@ async def session() -> AsyncIterator[AsyncSession]:
         yield db
         await db.close()
         await transaction.rollback()
+
+
+@pytest.fixture
+def new_session() -> Callable[[], AsyncSession]:
+    """Отдельная сессия на отдельном соединении, вне транзакции теста.
+
+    Общая фикстура `session` для проверок одновременности не годится: десять
+    параллельных запросов к одной AsyncSession дают ошибку SQLAlchemy вместо
+    проверки поведения.
+
+    Данные, заведённые `make_user`, такой сессии не видны: они лежат в
+    транзакции, которая не коммитится. Это не изъян, а условие — проверка
+    одновременности работает на несуществующем логине.
+    """
+    return lambda: AsyncSession(bind=test_engine)
 
 
 @pytest.fixture
@@ -8080,12 +8122,6 @@ export default defineConfig({
   },
 })
 ```
-
-Здесь же — отдельный конфиг типов для скриптов, `frontend/tsconfig.scripts.json`,
-и ссылка на него в `references` корневого `tsconfig.json`. В
-`tsconfig.node.json` рядом с `vite.config.ts` добавляется `vitest.config.ts`.
-
-```json
 {
   // Отдельный конфиг для скриптов. Они не браузерные и не сборочные: ходят
   // в файловую систему через node:fs и при этом импортируют модули из src.
@@ -8116,7 +8152,11 @@ export default defineConfig({
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["scripts"]
+  // Сюда же — обвязка сквозных тестов. Без неё playwright.config.ts и
+  // tests/e2e не входят ни в один проект tsconfig: `tsc -b` их не видит, а
+  // Playwright типы не проверяет вовсе, и опечатка в сценарии всплывает
+  // только на прогоне.
+  "include": ["scripts", "playwright.config.ts", "tests"]
 }
 ```
 
@@ -8917,10 +8957,6 @@ git commit -m "feat: роутер, гейт доступа и оболочка �
 ```bash
 cd frontend && npm install react-hook-form @hookform/resolvers zod
 ```
-
-- [ ] **Шаг 2: Написать `frontend/src/routes/login.tsx`**
-
-```typescript
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
@@ -8985,7 +9021,16 @@ export function LoginPage() {
     <div className="flex min-h-svh items-center justify-center px-4">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>Вход</CardTitle>
+          {/* h1 внутри CardTitle, а не голый CardTitle: сам CardTitle — это
+              div, и без заголовка форма входа оставалась бы единственным
+              экраном приложения без h1. Программа чтения с экрана объявляет
+              такую страницу безымянной, а сквозной тест не может сослаться
+              на неё иначе как по случайному куску текста. Заголовок
+              преднамеренно не даёт разметке разъехаться: preflight Tailwind
+              сбрасывает у h1 размер и отступы, поэтому вид не меняется. */}
+          <CardTitle>
+            <h1>Вход</h1>
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <form
@@ -10397,13 +10442,38 @@ git commit -m "feat: экраны входа, расходов, людей, жу
 ```bash
 cd frontend && npm install -D @playwright/test && npx playwright install chromium
 ```
-
-- [ ] **Шаг 2: Написать `frontend/playwright.config.ts`**
-
-```typescript
+import { existsSync } from "node:fs"
 import { defineConfig } from "@playwright/test"
 
 const PORT = 8100
+
+// Конфигурация Playwright — обвязка, а не приложение, и окружение она
+// читает сама: тот же .env в корне, что и бэкенд. Без этого
+// документированная команда `cd frontend && npx playwright test` работает
+// только у того, кто заранее экспортировал DATABASE_URL_E2E в свою оболочку,
+// а у всех остальных прогон падает при старте сервера на «DATABASE_URL
+// должна начинаться с postgresql://» — про забытую переменную там нет ни
+// слова. Проверено.
+//
+// Заданная снаружи переменная имеет приоритет: в CI обе базы приходят из
+// окружения job, и .env там нет вовсе.
+const ENV_FILE = new URL("../.env", import.meta.url)
+if (!process.env.DATABASE_URL_E2E && existsSync(ENV_FILE)) {
+  process.loadEnvFile(ENV_FILE)
+}
+
+const DATABASE_URL_E2E = process.env.DATABASE_URL_E2E
+if (!DATABASE_URL_E2E) {
+  // Запасного варианта нет намеренно, хотя написать `?? DATABASE_URL`
+  // соблазнительно: подстановка рабочего адреса означала бы, что сценарии
+  // создают и меняют данные в рабочей базе — молча и ровно тогда, когда
+  // переменную забыли. Обвязка pytest отказывается работать по той же
+  // причине и теми же словами.
+  throw new Error(
+    "DATABASE_URL_E2E не задан. Сквозные тесты создают и меняют данные и " +
+      "поэтому идут только в отдельную базу — смотри .env.example."
+  )
+}
 
 /**
  * E2e идут против собранного приложения, которое раздаёт сам бэкенд, — то
@@ -10413,6 +10483,12 @@ const PORT = 8100
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,
+  // Один воркер. fullyParallel: false выключает параллельность ВНУТРИ файла,
+  // но не между файлами: два спека шли бы одновременно в один сервер и одну
+  // базу. Сегодня они друг другу не мешают — данные каждый заводит свои, —
+  // но первая же проверка общего счётчика или суммы начнёт мигать, и
+  // причину будут искать в ней, а не здесь.
+  workers: 1,
   use: { baseURL: `http://127.0.0.1:${PORT}` },
   webServer: {
     // alembic перед uvicorn обязателен: база e2e отдельная и пустая, а
@@ -10425,12 +10501,17 @@ export default defineConfig({
       `npm run build && cd ../backend && uv run alembic upgrade head && ` +
       `uv run uvicorn app.main:app --port ${PORT}`,
     url: `http://127.0.0.1:${PORT}/api/health`,
-    reuseExistingServer: !process.env.CI,
+    // Переиспользования нет и локально. Оно выглядит удобством, а работает
+    // ловушкой: оставшийся на порту uvicorn (скажем, после Ctrl+C) Playwright
+    // подхватывает молча и ПРОПУСКАЕТ `npm run build` — то есть зелёный
+    // прогон проверяет прошлую сборку. Отказ «порт занят» громкий и честный,
+    // а сборка занимает доли секунды.
+    reuseExistingServer: false,
     timeout: 180_000,
     env: {
       // Отдельная база: тесты создают и меняют данные, и делать это в
       // рабочей базе нельзя.
-      DATABASE_URL: process.env.DATABASE_URL_E2E ?? process.env.DATABASE_URL ?? "",
+      DATABASE_URL: DATABASE_URL_E2E,
       APP_ENV: "local",
       APP_AUTH_SECRET: "e2e-secret-not-used-anywhere-real-000000",
       COOKIE_SECURE: "false",
@@ -10438,10 +10519,6 @@ export default defineConfig({
   },
 })
 ```
-
-- [ ] **Шаг 3: Написать `frontend/tests/e2e/auth.spec.ts`**
-
-```typescript
 import { expect, test } from "@playwright/test"
 
 // Данные создаются внутри теста, а не берутся из сида: тест, зависящий от
@@ -10454,7 +10531,9 @@ test("незалогиненного уводит на форму входа", a
   await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible()
 })
 
-test("неверная пара не пускает и не выдаёт, существует ли логин", async ({ page }) => {
+test("неверная пара не пускает и не выдаёт, существует ли логин", async ({
+  page,
+}) => {
   await page.goto("/login")
   await page.getByLabel("Логин").fill("нетакого")
   await page.getByLabel("Пароль").fill("мимо")
@@ -10470,7 +10549,9 @@ test("вход и выход работают", async ({ page }) => {
 
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible()
   // Предупреждение о паре по умолчанию обязано висеть на первом экране.
-  await expect(page.getByText("Вход под учётной записью по умолчанию")).toBeVisible()
+  await expect(
+    page.getByText("Вход под учётной записью по умолчанию")
+  ).toBeVisible()
 
   await page.getByRole("button", { name: "Выйти" }).click()
   await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible()
@@ -10485,6 +10566,11 @@ test("роль viewer не видит раздел «Люди» и не попа
   await page.getByLabel("Логин").fill("admin")
   await page.getByLabel("Пароль").fill("admin")
   await page.getByRole("button", { name: "Войти" }).click()
+  // Клик по «Войти» только отправляет запрос. Без ожидания следующий
+  // page.goto уходит раньше, чем приходит кука сессии: гейт уводит обратно
+  // на форму входа, и сценарий падает на поле «Имя», которого там нет.
+  // Проверено — без этой строки падал ровно так.
+  await page.waitForURL("/")
 
   await page.goto("/users")
   await page.getByLabel("Логин").fill(login)
@@ -10494,11 +10580,29 @@ test("роль viewer не видит раздел «Люди» и не попа
   await expect(page.getByRole("cell", { name: login })).toBeVisible()
 
   await page.getByRole("button", { name: "Выйти" }).click()
+  // Ожидание перехода обязательно: подписи «Логин» и «Пароль» есть и на
+  // форме заведения учётной записи, поэтому без него заполняется она —
+  // страница ещё та же, — а на форму входа приезжают пустые поля, и вход
+  // не происходит вовсе. Проверено: без этой строки сценарий вис на
+  // ожидании перехода на главную.
+  await page.waitForURL("/login")
   await page.getByLabel("Логин").fill(login)
   await page.getByLabel("Пароль").fill("длинныйпароль")
   await page.getByRole("button", { name: "Войти" }).click()
+  // То же ожидание, что и выше, и по той же причине: без него проверка
+  // ниже сходится на форме входа, где ссылки «Люди» нет ни у кого, — то
+  // есть тест проходил бы, ничего не проверив.
+  await page.waitForURL("/")
 
   await expect(page.getByRole("link", { name: "Люди" })).toHaveCount(0)
+
+  // Вторая половина названия: по прямому адресу viewer в раздел тоже не
+  // попадает. Форма заведения учётной записи ему не показывается, а список
+  // бэкенд отдавать отказывается — и экран говорит об отказе, а не
+  // притворяется пустым.
+  await page.goto("/users")
+  await expect(page.getByRole("button", { name: "Завести" })).toHaveCount(0)
+  await expect(page.getByText("Недостаточно прав")).toBeVisible()
 })
 ```
 
@@ -10513,17 +10617,6 @@ Expected: 4 passed
 git add frontend/playwright.config.ts frontend/tests/
 git commit -m "test: сквозной смоук входа и разграничения прав"
 ```
-
----
-
-### Задача 34: Смоук образцовой фичи
-
-**Files:**
-- Create: `frontend/tests/e2e/expenses.spec.ts`
-
-- [ ] **Шаг 1: Написать `frontend/tests/e2e/expenses.spec.ts`**
-
-```typescript
 import { expect, test } from "@playwright/test"
 
 test.beforeEach(async ({ page }) => {
@@ -10531,6 +10624,11 @@ test.beforeEach(async ({ page }) => {
   await page.getByLabel("Логин").fill("admin")
   await page.getByLabel("Пароль").fill("admin")
   await page.getByRole("button", { name: "Войти" }).click()
+  // Клик по «Войти» только отправляет запрос. Без ожидания перехода
+  // следующий page.goto уходит раньше, чем приходит кука сессии: гейт
+  // возвращает на форму входа, и каждый сценарий падает на поле «Дата»,
+  // которого там нет. Проверено — без этой строки падали все пять.
+  await page.waitForURL("/")
   await page.goto("/expenses")
 })
 
@@ -10543,7 +10641,13 @@ test("расход добавляется и появляется в табли�
   await page.getByRole("button", { name: "Добавить" }).click()
 
   await expect(page.getByRole("cell", { name: title })).toBeVisible()
-  await expect(page.getByRole("cell", { name: /1\s?200,50/ })).toBeVisible()
+  // Сумма проверяется в строке СВОЕГО расхода, а не по всей таблице. База
+  // e2e между прогонами не чистится, и на втором же прогоне ячеек
+  // «1 200,50 ₽» становится две — strict mode Playwright падает на двух
+  // совпадениях. В CI база каждый раз новая, поэтому там это молчало бы, а
+  // на машине разработчика падал бы каждый второй прогон. Воспроизведено.
+  const row = page.getByRole("row").filter({ hasText: title })
+  await expect(row.getByRole("cell", { name: /1\s?200,50/ })).toBeVisible()
 })
 
 test("без даты расход не создаётся", async ({ page }) => {
@@ -10563,10 +10667,14 @@ test("без даты расход не создаётся", async ({ page }) =>
   await page.getByRole("button", { name: "Добавить" }).click()
 
   await expect(page.getByText("Укажи дату")).toBeVisible()
-  await expect(page.getByRole("cell", { name: "Не должно сохраниться" })).toHaveCount(0)
+  await expect(
+    page.getByRole("cell", { name: "Не должно сохраниться" })
+  ).toHaveCount(0)
 })
 
-test("сумма сверх предела отклоняется с читаемым сообщением", async ({ page }) => {
+test("сумма сверх предела отклоняется с читаемым сообщением", async ({
+  page,
+}) => {
   await page.getByLabel("Дата").fill("2026-08-31")
   await page.getByLabel("Назначение").fill("Слишком много")
   await page.getByLabel("Сумма").fill("99000000")
@@ -10611,7 +10719,7 @@ test("изменение попадает в журнал", async ({ page }) => 
 - [ ] **Шаг 2: Прогнать все e2e**
 
 Run: `cd frontend && npx playwright test`
-Expected: 8 passed
+Expected: 9 passed
 
 - [ ] **Шаг 3: Коммит**
 
