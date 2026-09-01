@@ -3564,9 +3564,52 @@ API-тесты дешевле e2e на порядок и проверяют то
 не было вовсе — его роль играли Playwright-сценарии.
 
 **Files:**
+- Create: `backend/app/main.py`
 - Create: `backend/tests/conftest.py`
 
-- [ ] **Шаг 1: Написать `backend/tests/conftest.py`**
+- [ ] **Шаг 1: Написать `backend/app/main.py`**
+
+Приложение появляется здесь, а не в конце фазы, и растёт по мере
+добавления фич. Иначе обвязка тестов, которая его импортирует, не работала
+бы до задачи 22 — то есть `make check` был бы красным пять задач подряд, а
+привычка не смотреть на красный прогон закрепляется быстрее, чем пишется
+пять задач.
+
+Пока в приложении нет ни одного маршрута: только обработчики ошибок. Их
+достаточно, чтобы обвязка импортировалась, а первый же маршрут из задачи 18
+сразу попадёт под тесты.
+
+```python
+"""Сборка приложения.
+
+Маршруты добавляются по мере появления фич: каждая задача фазы дописывает
+свой роутер в список ниже. Так тесты фичи работают сразу, а не ждут конца
+фазы.
+"""
+
+import logging
+
+from fastapi import FastAPI
+
+from app.core.errors import register_error_handlers
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
+app = FastAPI(
+    title="apptemplate",
+    # Схема нужна для генерации типов клиента; интерактивные страницы
+    # FastAPI выключены — на контуре они висели бы открытым описанием API.
+    docs_url=None,
+    redoc_url=None,
+)
+
+register_error_handlers(app)
+```
+
+- [ ] **Шаг 2: Написать `backend/tests/conftest.py`**
 
 ```python
 """Фикстуры API-тестов.
@@ -3673,11 +3716,17 @@ async def login_as(client: AsyncClient, make_user):
     return _login
 ```
 
-- [ ] **Шаг 2: Коммит**
+- [ ] **Шаг 3: Проверить, что обвязка работает**
+
+Run: `cd backend && uv run pytest`
+Expected: 111 passed — фикстуры пока никем не используются, но обвязка
+импортируется и `make check` остаётся зелёным.
+
+- [ ] **Шаг 4: Коммит**
 
 ```bash
-git add backend/tests/conftest.py
-git commit -m "test: фикстуры API-тестов с откатом транзакции"
+git add backend/app/main.py backend/tests/conftest.py
+git commit -m "test: сборка приложения и фикстуры API-тестов"
 ```
 
 ---
@@ -3825,15 +3874,26 @@ async def document(name: DocumentName, user: CurrentUserDep) -> Document:
 оттуда — в типы клиента. Опечатка в имени документа на фронтенде станет
 ошибкой `tsc`.
 
-- [ ] **Шаг 4: Запустить тест (после задачи 22)**
+- [ ] **Шаг 4: Подключить роутер в `backend/app/main.py`**
+
+```python
+from app.features.meta.router import router as meta_router
+
+app.include_router(meta_router, prefix="/api")
+```
+
+Импорт — в шапку, вызов — после `register_error_handlers`.
+
+- [ ] **Шаг 5: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_meta.py -v`
 Expected: PASS, 8 passed
 
-- [ ] **Шаг 5: Коммит**
+- [ ] **Шаг 6: Коммит**
 
 ```bash
-git add backend/app/features/meta/router.py backend/tests/api/test_meta.py
+git add backend/app/features/meta/router.py backend/app/main.py \
+        backend/tests/api/test_meta.py
 git commit -m "feat: служебные маршруты health, build-info и документы"
 ```
 
@@ -4208,15 +4268,39 @@ async def me(user: CurrentUserDep) -> CurrentUserResponse:
     )
 ```
 
-- [ ] **Шаг 6: Запустить тест (после задачи 22)**
+- [ ] **Шаг 6: Подключить роутер и завести первую учётную запись**
+
+В `backend/app/main.py` добавить роутер и жизненный цикл: первая учётная
+запись создаётся при старте, если таблица пуста.
+
+```python
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from app.core.db import SessionFactory
+from app.features.auth.router import router as auth_router
+from app.features.auth.service import ensure_bootstrap_user
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    async with SessionFactory() as session:
+        await ensure_bootstrap_user(session)
+    yield
+```
+
+`lifespan=lifespan` передаётся в конструктор `FastAPI`, роутер
+подключается рядом с прочими.
+
+- [ ] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_auth.py -v`
 Expected: PASS, 12 passed
 
-- [ ] **Шаг 7: Коммит**
+- [ ] **Шаг 8: Коммит**
 
 ```bash
-git add backend/app/features/auth/ backend/tests/api/test_auth.py
+git add backend/app/features/auth/ backend/app/main.py backend/tests/api/test_auth.py
 git commit -m "feat: вход, выход и текущий пользователь"
 ```
 
@@ -4567,15 +4651,23 @@ async def update_user(
 `uuid.UUID`. Pydantic приводит его сам благодаря `from_attributes=True` и
 аннотации `id: str`.
 
-- [ ] **Шаг 6: Запустить тест (после задачи 22)**
+- [ ] **Шаг 6: Подключить роутер в `backend/app/main.py`**
+
+```python
+from app.features.users.router import router as users_router
+
+app.include_router(users_router, prefix="/api")
+```
+
+- [ ] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_users.py -v`
 Expected: PASS, 11 passed
 
-- [ ] **Шаг 7: Коммит**
+- [ ] **Шаг 8: Коммит**
 
 ```bash
-git add backend/app/features/users/ backend/tests/api/test_users.py
+git add backend/app/features/users/ backend/app/main.py backend/tests/api/test_users.py
 git commit -m "feat: список, создание и изменение учётных записей"
 ```
 
@@ -4910,15 +5002,23 @@ async def delete_expense(
 Маршрут `/summary` объявлен **до** `/{expense_id}`: иначе FastAPI сопоставит
 слово «summary» с параметром пути и попробует разобрать его как UUID.
 
-- [ ] **Шаг 6: Запустить тест (после задачи 22)**
+- [ ] **Шаг 6: Подключить роутер в `backend/app/main.py`**
+
+```python
+from app.features.expenses.router import router as expenses_router
+
+app.include_router(expenses_router, prefix="/api")
+```
+
+- [ ] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_expenses.py -v`
 Expected: PASS, 12 passed
 
-- [ ] **Шаг 7: Коммит**
+- [ ] **Шаг 8: Коммит**
 
 ```bash
-git add backend/app/features/expenses/ backend/tests/api/test_expenses.py
+git add backend/app/features/expenses/ backend/app/main.py backend/tests/api/test_expenses.py
 git commit -m "feat: образцовая фича расходов"
 ```
 
@@ -5053,7 +5153,24 @@ def mount_frontend(app: FastAPI) -> None:
         return FileResponse(DIST / "index.html")
 ```
 
-- [ ] **Шаг 4: Написать `backend/app/main.py`**
+- [ ] **Шаг 4: Дописать `backend/app/main.py`**
+
+Приложение собиралось по частям начиная с задачи 17: сюда уже подключены
+маршруты meta, auth, users и expenses. Осталось добавить журнал и раздачу
+статики.
+
+```python
+from app.features.audit.router import router as audit_router
+
+app.include_router(audit_router, prefix="/api")
+
+# Монтируется последним: перехватчик /{path:path} обязан стоять после всех
+# маршрутов API, иначе он поглотит их.
+mount_frontend(app)
+```
+
+Импорт `mount_frontend` — из `app.core.static`. Итоговый файл должен
+выглядеть так:
 
 ```python
 """Сборка приложения."""
@@ -5111,7 +5228,6 @@ for router in (
 # маршрутов API, иначе он поглотит их.
 mount_frontend(app)
 ```
-
 - [ ] **Шаг 5: Написать `backend/app/openapi.py`**
 
 ```python
