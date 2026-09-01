@@ -31,7 +31,15 @@ export function LoginPage() {
       if (error) throw error
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["auth", "me"] })
+      // refetchQueries, а не invalidateQueries. invalidate перезапрашивает
+      // только активные запросы, а на форме входа за currentUserQuery никто
+      // не подписан: запрос помечался бы устаревшим, но в кэше оставался бы
+      // null — тот самый, который положил гейт, уводя сюда. ensureQueryData
+      // в beforeLoad отдаёт кэш как есть (null — это данные, а не пустота),
+      // видит «не вошёл» и возвращает на /login. Замерено в браузере: с
+      // invalidate верная пара admin / admin оставляла на форме входа
+      // молча, без ошибки, а перезагрузка страницы открывала главную.
+      await queryClient.refetchQueries({ queryKey: ["auth", "me"] })
       await navigate({ to: "/" })
     },
     onError: (error) => {
