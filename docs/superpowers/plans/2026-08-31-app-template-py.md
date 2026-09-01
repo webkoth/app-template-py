@@ -8126,17 +8126,19 @@ cd frontend && npm install @tanstack/react-router
 ```typescript
 import { queryOptions } from "@tanstack/react-query"
 import { api } from "@/api/client"
+import type { components } from "@/api/schema"
 
-export type Role = "viewer" | "editor" | "admin"
-
-export interface CurrentUser {
-  id: string
-  login: string
-  name: string
-  role: Role
-  /** Вход идёт под учётной записью из APP_BOOTSTRAP_*. Считает сервер. */
-  using_bootstrap_account: boolean
-}
+/**
+ * Формы берутся из схемы, а не переписываются от руки.
+ *
+ * Рукописная копия сходится с бэкендом ровно до первой правки там: поле
+ * переименовали — клиент собирается, читает undefined и показывает пустоту.
+ * Здесь же переименование становится ошибкой компиляции, а ради этого
+ * генерация типов из OpenAPI и заведена. Проверено: переименование role в
+ * схеме роняет сборку в двух местах.
+ */
+export type CurrentUser = components["schemas"]["CurrentUserResponse"]
+export type Role = CurrentUser["role"]
 
 const RANK: Role[] = ["viewer", "editor", "admin"]
 
@@ -8322,7 +8324,13 @@ const privateRoute = createRoute({
   },
 })
 
-const page = (path: string, component: () => JSX.Element) =>
+// Параметр обобщённый, а не `path: string`. С обычной строкой литерал пути
+// теряется на входе в помощник, дерево регистрируется с путём-строкой, и
+// типизированные ссылки перестают знать закрытую часть приложения: список
+// LINKS перестаёт собираться вовсе — `Type '"/expenses" | …' is not
+// assignable to type '"/" | "/login" | "." | ".."'`. Проверка при этом не
+// строже, а слабее. Замерено.
+const page = <TPath extends string>(path: TPath, component: () => JSX.Element) =>
   createRoute({ getParentRoute: () => privateRoute, path, component })
 
 const routeTree = rootRoute.addChildren([
@@ -8380,10 +8388,52 @@ createRoot(document.getElementById("root")!).render(
 )
 ```
 
-- [ ] **Шаг 7: Коммит (после задач 27–32, когда появятся страницы)**
+- [ ] **Шаг 7: Написать заглушки страниц и убрать мусор шаблона Vite**
 
-Файл `router.tsx` ссылается на страницы, которых ещё нет: `tsc` будет
-красным до задачи 32. Это ожидаемо — коммит делается в конце задачи 32.
+`router.tsx` ссылается на семь страниц. Пока их нет, `tsc` красный, а
+значит красный и `make check` — на все шесть задач вперёд. Проверка,
+которая красная постоянно, перестаёт что-либо значить: понять, что сломала
+очередная правка, по ней нельзя.
+
+Поэтому каждая страница заводится заглушкой сразу, а своя задача её
+заменяет. Семь файлов в `frontend/src/routes/`: `login.tsx` (`LoginPage`),
+`home.tsx` (`HomePage`), `expenses.tsx` (`ExpensesPage`), `users.tsx`
+(`UsersPage`), `audit.tsx` (`AuditPage`), `design.tsx` (`DesignPage`),
+`docs.tsx` (`DocsPage`). Все одинаковые, с точностью до имени и заголовка:
+
+```typescript
+// Заглушка. Настоящий экран пишется своей задачей — до тех пор страница
+// существует, чтобы дерево маршрутов собиралось и `make check` оставался
+// зелёным: иначе проверка типов красная шесть задач подряд, и понять, что
+// именно сломала очередная правка, нечем.
+import { PageMain } from "@/components/page-main"
+
+export function ExpensesPage() {
+  return (
+    <PageMain>
+      <h1 className="text-3xl font-semibold">Расходы</h1>
+    </PageMain>
+  )
+}
+```
+
+Заодно удаляются `frontend/src/App.tsx`, `frontend/src/App.css` и
+`frontend/src/assets/` — после переписывания `main.tsx` на них не ссылается
+никто. Шаблон, приехавший с чужими картинками и стилями, учит тому, что
+мёртвый код — это нормально.
+
+- [ ] **Шаг 8: Прогнать проверку и закоммитить**
+
+Run: `make check`
+Expected: зелёный целиком — бэкенд, типы фронтенда, его тесты.
+
+```bash
+git add frontend/src/lib/auth.ts frontend/src/components/ \
+        frontend/src/router.tsx frontend/src/main.tsx frontend/src/routes/ \
+        frontend/package.json frontend/package-lock.json
+git rm -r --cached frontend/src/App.tsx frontend/src/App.css frontend/src/assets
+git commit -m "feat: роутер, гейт доступа и оболочка приложения"
+```
 
 ---
 
@@ -8497,6 +8547,16 @@ export function LoginPage() {
 }
 ```
 
+- [ ] **Шаг 3: Прогнать проверку и закоммитить**
+
+Run: `make check`
+Expected: зелёный целиком.
+
+```bash
+git add frontend/src/routes/login.tsx frontend/package.json frontend/package-lock.json
+git commit -m "feat: экран входа"
+```
+
 ---
 
 ### Задача 28: Главная страница
@@ -8606,6 +8666,16 @@ export function HomePage() {
     </PageMain>
   )
 }
+```
+
+- [ ] **Шаг 3: Прогнать проверку и закоммитить**
+
+Run: `make check`
+Expected: зелёный целиком.
+
+```bash
+git add frontend/src/components/bootstrap-warning.tsx frontend/src/routes/home.tsx
+git commit -m "feat: стартовая страница и предупреждение о дефолтной учётке"
 ```
 
 ---
@@ -8910,6 +8980,16 @@ export function ExpensesPage() {
 }
 ```
 
+- [ ] **Шаг 3: Прогнать проверку и закоммитить**
+
+Run: `make check`
+Expected: зелёный целиком.
+
+```bash
+git add frontend/src/lib/format.ts frontend/src/routes/expenses.tsx
+git commit -m "feat: экран расходов со сводкой по категориям"
+```
+
 ---
 
 ### Задача 30: Экран учётных записей
@@ -9159,6 +9239,16 @@ export function UsersPage() {
 }
 ```
 
+- [ ] **Шаг 2: Прогнать проверку и закоммитить**
+
+Run: `make check`
+Expected: зелёный целиком.
+
+```bash
+git add frontend/src/routes/users.tsx
+git commit -m "feat: экран учётных записей"
+```
+
 ---
 
 ### Задача 31: Журнал аудита
@@ -9241,6 +9331,16 @@ export function AuditPage() {
     </PageMain>
   )
 }
+```
+
+- [ ] **Шаг 2: Прогнать проверку и закоммитить**
+
+Run: `make check`
+Expected: зелёный целиком.
+
+```bash
+git add frontend/src/routes/audit.tsx
+git commit -m "feat: экран журнала аудита"
 ```
 
 ---
