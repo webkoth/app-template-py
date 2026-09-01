@@ -15,6 +15,7 @@ from app.core.db import SessionFactory
 from app.core.errors import register_error_handlers
 from app.features.auth.router import router as auth_router
 from app.features.auth.service import ensure_bootstrap_user
+from app.features.expenses.router import router as expenses_router
 from app.features.meta.router import router as meta_router
 from app.features.users.router import router as users_router
 
@@ -44,3 +45,4 @@ register_error_handlers(app)
 app.include_router(meta_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
+app.include_router(expenses_router, prefix="/api")
