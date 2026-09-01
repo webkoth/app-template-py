@@ -62,7 +62,16 @@ export function LoginPage() {
     <div className="flex min-h-svh items-center justify-center px-4">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>Вход</CardTitle>
+          {/* h1 внутри CardTitle, а не голый CardTitle: сам CardTitle — это
+              div, и без заголовка форма входа оставалась бы единственным
+              экраном приложения без h1. Программа чтения с экрана объявляет
+              такую страницу безымянной, а сквозной тест не может сослаться
+              на неё иначе как по случайному куску текста. Заголовок
+              преднамеренно не даёт разметке разъехаться: preflight Tailwind
+              сбрасывает у h1 размер и отступы, поэтому вид не меняется. */}
+          <CardTitle>
+            <h1>Вход</h1>
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <form

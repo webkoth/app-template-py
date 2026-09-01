@@ -60,6 +60,18 @@ test_engine = create_async_engine(settings.async_database_url_e2e, pool_pre_ping
 @pytest.fixture(scope="session", autouse=True)
 async def _schema() -> AsyncIterator[None]:
     async with test_engine.begin() as conn:
+        # Схема сбрасывается и ПЕРЕД прогоном, а не только после. Эту же базу
+        # использует Playwright: он накатывает схему миграциями и оставляет
+        # после себя строки, которые создали сценарии. create_all их не
+        # трогает — таблицы уже есть, — и тесты, считающие записи или
+        # заводящие учётную запись «admin», падают на чужих данных: после
+        # прогона e2e `make check` давал 11 отказов в tests/api при
+        # неизменном коде. Воспроизведено.
+        #
+        # IF EXISTS: на новой базе схемы public может не быть вовсе, и без
+        # него первый же прогон падал бы на подготовке.
+        await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with test_engine.begin() as conn:
