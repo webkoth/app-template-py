@@ -133,6 +133,10 @@ class RateLimiter:
     def reset(self, key: str) -> None:
         self._hits.pop(self._normalize(key), None)
 
+    def clear(self) -> None:
+        """Забыть все отметки. То же, что делает перезапуск процесса."""
+        self._hits.clear()
+
     def size(self) -> int:
         return len(self._hits)
 

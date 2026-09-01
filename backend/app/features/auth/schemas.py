@@ -1,12 +1,11 @@
 from pydantic import BaseModel, Field
 
+from app.core.users import Login
 from app.domain.roles import Role
 
 
 class LoginRequest(BaseModel):
-    # Логин без пробельных символов: перевод строки внутри сломал бы разбор
-    # токена, и такой пользователь молча не смог бы войти.
-    login: str = Field(min_length=1, max_length=255, pattern=r"^\S+$")
+    login: Login
     password: str = Field(min_length=1, max_length=1024)
 
 

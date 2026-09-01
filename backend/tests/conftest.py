@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.config import settings
 from app.core.db import Base, get_session
+from app.core.rate_limit import address_limiter, login_limiter
 from app.core.security import hash_password
 from app.core.users import User, UserStatus
 from app.domain.roles import Role
@@ -77,6 +78,24 @@ async def _schema() -> AsyncIterator[None]:
         # Воспроизведено.
         await conn.execute(text("DROP SCHEMA public CASCADE"))
         await conn.execute(text("CREATE SCHEMA public"))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_limiters() -> None:
+    """Счётчики попыток — глобалы модуля, и состояние течёт между тестами.
+
+    Подменить объект в фикстуре нельзя: сервис входа связывает имена при
+    импорте (`from app.core.rate_limit import login_limiter`), и подмена
+    атрибута модуля до него не дойдёт. Остаётся чистить содержимое.
+
+    Без этого порядок тестов влияет на результат. Показано мутацией: удаление
+    одной строки `login_limiter.reset(login)` в сервисе уронило посторонний
+    тест про `/me` — тот всего лишь входил третьим по счёту. Пока успешный
+    вход обнуляет оба счётчика, всё сходится само; первый же файл с длинной
+    серией неудачных входов начнёт ронять соседей по порядку.
+    """
+    login_limiter.clear()
+    address_limiter.clear()
 
 
 @pytest.fixture

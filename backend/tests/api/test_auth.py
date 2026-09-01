@@ -1,6 +1,8 @@
 import asyncio
+import time
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import select
 
 from app.core.errors import RuleViolation
@@ -52,6 +54,17 @@ async def test_unknown_login_gives_same_message_as_wrong_password(client, make_u
     )
     # Разные тексты подсказали бы, какие логины существуют.
     assert wrong.json()["error"] == missing.json()["error"]
+
+
+async def test_login_ignores_case(client, make_user):
+    # Учётная запись заведена в нижнем регистре, человек набирает как
+    # привык. Без приведения он получил бы «неверный логин или пароль» на
+    # верном пароле и не понял бы, почему.
+    await make_user(login="ivan")
+    response = await client.post(
+        "/api/auth/login", json={"login": "IVAN", "password": "секрет"}
+    )
+    assert response.status_code == 200
 
 
 async def test_disabled_user_cannot_login(client, make_user):
@@ -121,6 +134,27 @@ async def test_budget_is_taken_before_password_check(new_session):
     assert all(
         m.startswith("Слишком много попыток") for m in messages if m != DENIED
     ), messages
+
+
+async def test_denial_is_not_faster_than_the_floor(new_session):
+    # Выравнивание времени ответа — единственная защита от перебора логинов
+    # по времени, и без этой проверки её потеря молчалива: отказ продолжает
+    # быть отказом, тесты остаются зелёными, а оракул возвращается.
+    #
+    # Отказ по несуществующему логину scrypt не считает и без выравнивания
+    # возвращается за единицы миллисекунд; отказ по неверному паролю — за
+    # десятки. Проверяется нижняя граница, а не разница между ветками:
+    # граница не зависит от загрузки машины и потому не флапает.
+    from app.core.rate_limit import address_limiter, login_limiter
+    from app.features.auth.service import MIN_RESPONSE_SECONDS, authenticate
+
+    login_limiter.reset("призрак")
+    address_limiter.reset("10.0.0.2")
+    started = time.monotonic()
+    async with new_session() as db:
+        with pytest.raises(RuleViolation):
+            await authenticate(db, "призрак", "мимо", "10.0.0.2")
+    assert time.monotonic() - started >= MIN_RESPONSE_SECONDS
 
 
 async def test_successful_login_clears_counter(client, make_user):

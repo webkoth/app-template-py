@@ -116,7 +116,11 @@ async def ensure_bootstrap_user(session: AsyncSession) -> None:
         return
     session.add(
         User(
-            login=settings.app_bootstrap_login,
+            # Тот же вид, что и у логина из формы: без приведения запись,
+            # заведённая как APP_BOOTSTRAP_LOGIN=Admin, оказалась бы
+            # недостижимой — форма привела бы ввод к «admin», а в базе
+            # лежало бы «Admin».
+            login=settings.app_bootstrap_login.strip().lower(),
             name=settings.app_bootstrap_name,
             role=Role.admin,
             # Тоже в пул потоков: hash_password стоит столько же, сколько
