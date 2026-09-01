@@ -193,10 +193,16 @@ frontend/dist/
 frontend/src/api/schema.d.ts.new
 test-results/
 playwright-report/
+build-info.json
 ```
 
 `frontend/src/api/schema.d.ts` **не** игнорируется: он коммитится, чтобы
 `tsc` работал без запуска бэкенда, а CI ловил расхождение по дифу.
+
+`build-info.json` игнорируется наоборот: его пишет доставка, и в
+репозитории ему не место. Заведённый локально при отладке, он однажды
+уехал бы в коммит и стал бы отвечать на `/api/meta/build-info` версией
+чужой машины.
 
 - [ ] **Шаг 4: Проверить, что окружение ставится**
 
@@ -8539,8 +8545,16 @@ jobs:
 
       - name: Записать версию сборки
         run: |
+          set -euo pipefail
+          COMMIT=$(git rev-parse --short HEAD)
+          # Пустой результат — не мелочь: при неполном клоне `git rev-parse`
+          # печатает пустоту, и файл выходит валидным JSON с пустой версией.
+          # Маршрут /api/meta/build-info отдал бы 200 и пустую строку, то есть
+          # тихо сообщил бы «версия такая» вместо «версию не знаю» — а идут к
+          # нему ровно тогда, когда разбираются, что именно доставлено.
+          test -n "$COMMIT" || { echo "git rev-parse вернул пусто"; exit 1; }
           printf '{"commit":"%s","built_at":"%s"}\n' \
-            "$(git rev-parse --short HEAD)" "$(date -u +%FT%TZ)" > build-info.json
+            "$COMMIT" "$(date -u +%FT%TZ)" > build-info.json
 
       - name: Упаковать статику и версию
         run: tar -czf dist.tar.gz -C frontend dist -C ../ build-info.json
