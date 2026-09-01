@@ -1,9 +1,4 @@
-"""Сборка приложения.
-
-Маршруты добавляются по мере появления фич: каждая задача фазы дописывает
-свой роутер в список ниже. Так тесты фичи работают сразу, а не ждут конца
-фазы.
-"""
+"""Сборка приложения."""
 
 import logging
 from collections.abc import AsyncIterator
@@ -13,6 +8,8 @@ from fastapi import FastAPI
 
 from app.core.db import SessionFactory
 from app.core.errors import register_error_handlers
+from app.core.static import mount_frontend
+from app.features.audit.router import router as audit_router
 from app.features.auth.router import router as auth_router
 from app.features.auth.service import ensure_bootstrap_user
 from app.features.expenses.router import router as expenses_router
@@ -34,15 +31,24 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="apptemplate",
+    lifespan=lifespan,
     # Схема нужна для генерации типов клиента; интерактивные страницы
     # FastAPI выключены — на контуре они висели бы открытым описанием API.
     docs_url=None,
     redoc_url=None,
-    lifespan=lifespan,
 )
 
 register_error_handlers(app)
-app.include_router(meta_router, prefix="/api")
-app.include_router(auth_router, prefix="/api")
-app.include_router(users_router, prefix="/api")
-app.include_router(expenses_router, prefix="/api")
+
+for router in (
+    meta_router,
+    auth_router,
+    users_router,
+    expenses_router,
+    audit_router,
+):
+    app.include_router(router, prefix="/api")
+
+# Монтируется последним: перехватчик /{path:path} обязан стоять после всех
+# маршрутов API, иначе он поглотит их.
+mount_frontend(app)

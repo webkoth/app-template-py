@@ -28,3 +28,22 @@ modules =
     app.features.expenses
     app.features.audit
     app.features.meta
+
+[importlinter:contract:router-goes-through-service]
+name = router не ходит в модели мимо service
+type = forbidden
+# Только прямые импорты. Без этой строки контракт сломан с рождения и по
+# ложной причине: путь `users.router → users.schemas → core.users` есть и
+# обязан быть — схема ответа берёт оттуда UserStatus и тип логина. Запрет
+# же не про то, кто чей предок в цепочке, а про то, лезет ли роутер в
+# модели САМ, минуя сервис.
+allow_indirect_imports = True
+source_modules =
+    app.features.auth.router
+    app.features.users.router
+    app.features.expenses.router
+    app.features.audit.router
+forbidden_modules =
+    app.features.expenses.models
+    app.core.users
+    app.core.audit
