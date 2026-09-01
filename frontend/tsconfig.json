@@ -1,0 +1,13 @@
+{
+  // Псевдоним продублирован здесь, а не только в tsconfig.app.json:
+  // shadcn CLI читает корневой tsconfig.json, и без этой секции он не
+  // разворачивает «@» и складывает компоненты в каталог с именем «@».
+  "compilerOptions": {
+    "paths": { "@/*": ["./src/*"] }
+  },
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}

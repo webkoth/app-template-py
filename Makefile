@@ -11,16 +11,25 @@ install:
 	cd backend && uv sync
 	@if [ -f frontend/package.json ]; then cd frontend && npm ci; fi
 
-# Фронтенд проверяется, только когда он установлен. Проверка по
-# node_modules, а не по package.json: пропустить надо и когда фронтенда ещё
-# нет, и когда забыли `make install` — во втором случае npx полез бы в сеть
-# и упал бы невнятно. Пропуск громкий: молчаливый однажды скроет поломку.
+# Признак готовности фронтенда — frontend/vitest.config.ts, а не наличие
+# каталога: каркас SPA появляется раньше, чем типы клиента и тесты, и по
+# каталогу ворота открылись бы на две задачи раньше, чем за ними есть что
+# проверять. vitest.config.ts означает ровно нужное: фронтенд дособран, его
+# тесты настроены. Пропуск громкий: молчаливый однажды скроет поломку.
+#
+# Если тесты настроены, а node_modules нет — это забытый `make install`, и
+# это отказ, а не пропуск: иначе npx полез бы в сеть и упал бы невнятно.
 check: check-backend
-	@if [ -d frontend/node_modules ]; then \
-		$(MAKE) check-frontend; \
+	@if [ -f frontend/vitest.config.ts ]; then \
+		if [ -d frontend/node_modules ]; then \
+			$(MAKE) check-frontend; \
+		else \
+			echo "== фронтенд настроен, но не установлен =="; \
+			echo "   поставить: make install"; \
+			exit 1; \
+		fi; \
 	else \
-		echo "== фронтенд не установлен, его проверки пропущены =="; \
-		echo "   поставить: make install"; \
+		echo "== фронтенд ещё не дособран, его проверки пропущены =="; \
 	fi
 
 check-backend:
