@@ -3861,14 +3861,17 @@ Create `backend/tests/api/test_auth.py`:
 
 ```python
 import asyncio
+import logging
 import time
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from app.core.config import settings
 from app.core.errors import RuleViolation
-from app.core.security import AUTH_COOKIE
+from app.core.security import AUTH_COOKIE, SESSION_MAX_AGE_SECONDS
 from app.core.users import User, UserStatus
 from app.domain.roles import Role
 
@@ -3895,6 +3898,38 @@ async def test_cookie_is_httponly_and_samesite(client, make_user):
     # На поведение регистр не влияет — по RFC 6265bis значение атрибута
     # разбирается без учёта регистра, и браузеры читают «lax».
     assert "samesite=lax" in header.lower()
+    # Срок куки и срок токена — одна политика. Раньше это были две
+    # несвязанные константы, и мутация «сделать срок куки минутой» проходила
+    # молча: короче — человека выкидывает раньше срока без причины, длиннее
+    # — SPA видит куку, считает себя вошедшим и получает 401 на каждый
+    # запрос. Величина закреплена литералом, а не той же константой, которой
+    # задаётся: тест, сверяющий константу с собой, зелен при любом её
+    # значении.
+    assert SESSION_MAX_AGE_SECONDS == 7 * 24 * 60 * 60
+    assert "max-age=604800" in header.lower()
+
+
+async def test_cookie_is_secure_only_when_the_contour_is_under_https(
+    client, make_user, monkeypatch
+):
+    # Secure — единственный из трёх атрибутов, чья потеря невидима: кука
+    # продолжает работать, просто уезжает и по http, то есть достаётся любому
+    # на пути. Проверяется в обе стороны: жёстко вписанный False снимает
+    # защиту на контуре, жёстко вписанный True ломает локальную разработку —
+    # браузер такую куку по http не примет и человек не войдёт вовсе.
+    await make_user(login="ivan")
+
+    monkeypatch.setattr(settings, "cookie_secure", True)
+    secured = await client.post(
+        "/api/auth/login", json={"login": "ivan", "password": "секрет"}
+    )
+    assert "; secure" in secured.headers["set-cookie"].lower()
+
+    monkeypatch.setattr(settings, "cookie_secure", False)
+    plain = await client.post(
+        "/api/auth/login", json={"login": "ivan", "password": "секрет"}
+    )
+    assert "; secure" not in plain.headers["set-cookie"].lower()
 
 
 async def test_wrong_password_rejected(client, make_user):
@@ -3916,6 +3951,48 @@ async def test_unknown_login_gives_same_message_as_wrong_password(client, make_u
     )
     # Разные тексты подсказали бы, какие логины существуют.
     assert wrong.json()["error"] == missing.json()["error"]
+
+
+async def test_login_with_whitespace_inside_is_refused(client, make_user):
+    # `^\S+$`. Без него форма принимает «ad\nmin», сервис находит такого
+    # пользователя, подписывает токен и ставит куку — а разбор токена
+    # спотыкается о перевод строки, verify_session_token возвращает None, и
+    # человек получает 200 с Set-Cookie, а затем 401 на каждый запрос. Молча.
+    # Воспроизведено.
+    await make_user(login="ad\nmin")
+    response = await client.post(
+        "/api/auth/login", json={"login": "ad\nmin", "password": "секрет"}
+    )
+    assert response.status_code == 400
+    assert AUTH_COOKIE not in response.cookies
+
+
+async def test_login_is_trimmed(client, make_user):
+    # Логин, скопированный из письма, приходит с пробелами по краям. Без
+    # обрезки он не просто не находится: он не проходит `^\S+$`, и человек
+    # получает «недопустимые символы» на верной паре.
+    await make_user(login="ivan")
+    response = await client.post(
+        "/api/auth/login", json={"login": " ivan ", "password": "секрет"}
+    )
+    assert response.status_code == 200
+
+
+async def test_login_length_is_checked_after_case_folding(client):
+    # 200 турецких «İ» (U+0130) проходят проверку длины и превращаются в 400
+    # символов: lower() раскладывает каждую букву на две. Сегодня цена этому
+    # — SELECT, который ничего не найдёт, но тот же тип берёт создание
+    # учётной записи, и там это StringDataRightTruncation: пятисотка вместо
+    # отказа формы, а SQL с параметрами уезжает в лог.
+    #
+    # Проверяется текст отказа, а не только код: при проверке длины ДО
+    # приведения такой логин доходит до базы и получает обычное «неверный
+    # логин или пароль», то есть по коду ответа мутация неотличима.
+    response = await client.post(
+        "/api/auth/login", json={"login": "İ" * 200, "password": "секрет"}
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == "Слишком длинное значение"
 
 
 async def test_login_ignores_case(client, make_user):
@@ -4010,13 +4087,134 @@ async def test_denial_is_not_faster_than_the_floor(new_session):
     from app.core.rate_limit import address_limiter, login_limiter
     from app.features.auth.service import MIN_RESPONSE_SECONDS, authenticate
 
+    # Величина закреплена литералом. Мерить той же константой, которую тест
+    # и охраняет, бесполезно: при MIN_RESPONSE_SECONDS = 0 такая проверка
+    # остаётся зелёной, то есть ловит «убрали вызов finish()» и не ловит
+    # «выключили границу» — а защиты умирают именно так, под предлогом
+    # «ускорим тесты».
+    assert MIN_RESPONSE_SECONDS == 0.25
+
     login_limiter.reset("призрак")
     address_limiter.reset("10.0.0.2")
     started = time.monotonic()
     async with new_session() as db:
         with pytest.raises(RuleViolation):
             await authenticate(db, "призрак", "мимо", "10.0.0.2")
-    assert time.monotonic() - started >= MIN_RESPONSE_SECONDS
+    assert time.monotonic() - started >= 0.25
+
+
+async def test_denial_gives_the_connection_back_before_it_waits():
+    """Выравнивание времени не должно держать соединение пула.
+
+    Замерено на прежнем варианте с пулом приложения (5 плюс 5 сверху): сорок
+    одновременных отказов занимали все десять соединений на четверть секунды
+    каждое, и посторонний `select 1` шёл 211 мс вместо 0,7 мс. То есть один
+    дешёвый POST без единого верного пароля укладывал все прочие маршруты, а
+    дальше начинался pool_timeout. После возврата соединения перед сном тот
+    же замер даёт 1–15 мс.
+
+    Пул здесь на одно соединение намеренно: «держит» и «не держит»
+    отличаются тогда не долями миллисекунды, а всей границей выравнивания, и
+    проверка не зависит от загрузки машины.
+    """
+    from app.features.auth.service import authenticate
+
+    engine = create_async_engine(
+        settings.async_database_url_e2e, pool_size=1, max_overflow=0
+    )
+    try:
+
+        async def denial() -> None:
+            async with AsyncSession(bind=engine) as db:
+                with pytest.raises(RuleViolation):
+                    await authenticate(db, "призрак", "мимо", "10.0.0.3")
+
+        attempt = asyncio.create_task(denial())
+        # Дать отказу дойти до сна: SELECT сделан, выравнивание началось.
+        await asyncio.sleep(0.05)
+        started = time.monotonic()
+        async with AsyncSession(bind=engine) as db:
+            await db.execute(text("select 1"))
+        waited = time.monotonic() - started
+        await attempt
+    finally:
+        await engine.dispose()
+
+    assert waited < 0.1, f"посторонний запрос ждал соединения {waited * 1000:.0f} мс"
+
+
+class _SlowDatabase:
+    """Сессия, у которой база отвечает медленно. Больше ничего не меняет."""
+
+    def __init__(self, inner, delay: float) -> None:
+        self._inner = inner
+        self._delay = delay
+
+    async def execute(self, *args, **kwargs):
+        await asyncio.sleep(self._delay)
+        return await self._inner.execute(*args, **kwargs)
+
+    async def commit(self):
+        return await self._inner.commit()
+
+    async def rollback(self):
+        return await self._inner.rollback()
+
+
+async def test_alarm_ignores_time_spent_outside_the_password_check(
+    caplog, session, make_user
+):
+    # Сигнализация о потере выравнивания обязана мерить проверку пароля, а не
+    # время ответа целиком. По полному времени она врёт под нагрузкой:
+    # замерено — сорок одновременных отказов по несуществующему логину давали
+    # 30 предупреждений, хотя scrypt в этих запросах не вызывался вовсе, а
+    # после возврата соединения в пул сто одновременных отказов с проверкой
+    # пароля давали ещё 38. Лишнее время уходило на ожидание соединения —
+    # одинаковое для обеих веток и потому никакого различия не создающее.
+    #
+    # Здесь то же самое воспроизводится дёшево: база отвечает 300 мс, сама
+    # проверка пароля остаётся быстрой. Молчания достаточно: единственная
+    # сигнализация о молчаливой потере защиты не имеет права давать ложные
+    # срабатывания — её перестанут читать ровно до того, как она понадобится.
+    from app.features.auth import service
+
+    await make_user(login="ivan")
+    service._alarm_last_at = None
+    with caplog.at_level(logging.WARNING, logger=service.__name__):
+        with pytest.raises(RuleViolation):
+            await service.authenticate(
+                _SlowDatabase(session, 0.3), "ivan", "мимо", "10.0.0.4"
+            )
+    assert [r.getMessage() for r in caplog.records if r.name == service.__name__] == []
+
+
+async def test_alarm_fires_once_when_the_password_check_outgrows_the_floor(
+    caplog, session, make_user, monkeypatch
+):
+    # Обратная сторона: когда scrypt перестаёт укладываться в границу,
+    # различие веток по времени возвращается, и сказать об этом некому — на
+    # ответе это не видно. Строка в логе и есть единственный признак.
+    #
+    # Строка одна на две попытки. Если scrypt действительно замедлился, это
+    # верно для каждого входа, и без задвижки один POST даёт одну строку
+    # WARNING в единственный диагностический канал контура: настоящий сигнал
+    # утонул бы в собственных повторах.
+    from app.features.auth import service
+
+    await make_user(login="ivan")
+    service._alarm_last_at = None
+
+    def slow_verify(password: str, stored: str) -> bool:
+        time.sleep(service.MIN_RESPONSE_SECONDS + 0.05)
+        return False
+
+    monkeypatch.setattr(service, "verify_password", slow_verify)
+    with caplog.at_level(logging.WARNING, logger=service.__name__):
+        for _ in range(2):
+            with pytest.raises(RuleViolation):
+                await service.authenticate(session, "ivan", "мимо", "10.0.0.5")
+    lines = [r.getMessage() for r in caplog.records if r.name == service.__name__]
+    assert len(lines) == 1, lines
 
 
 async def test_successful_login_clears_counter(client, make_user):
@@ -4037,47 +4235,122 @@ async def test_successful_login_clears_counter(client, make_user):
     assert login_limiter.size() == marked - 1
 
 
-async def test_bootstrap_creates_reachable_account(session, monkeypatch):
-    # У первой учётной записи охранника не было вовсе: `ensure_bootstrap_user`
-    # не вызывался ни одним тестом, и мутация «убрать .lower()» проходила
-    # молча. Цена такой пропажи — контур, куда невозможно войти: запись есть,
-    # пара из .env верна, а форма отвечает «неверный логин или пароль».
-    from app.core.config import settings
-    from app.features.auth.service import ensure_bootstrap_user
+async def test_successful_login_clears_the_address_counter(client, make_user):
+    # Второй счётчик обнуляется по той же причине, что и первый, но цена
+    # ошибки другая: адрес общий. Без этого офис за одним NAT запирается
+    # после тридцати успешных входов за пятнадцать минут — ровно тот
+    # сценарий, ради которого счётчиков два.
+    from app.core.rate_limit import address_limiter
 
-    monkeypatch.setattr(settings, "app_bootstrap_login", "Admin")
-    await ensure_bootstrap_user(session)
-
-    created = (
-        await session.execute(select(User).where(User.login == "admin"))
-    ).scalar_one()
-    assert created.role is Role.admin
-
-
-async def test_bootstrap_does_nothing_when_table_is_not_empty(
-    session, make_user, monkeypatch
-):
-    # Условие «только на пустой таблице» — вторая половина того же правила.
-    # Без него каждый перезапуск возвращал бы отключённую запись admin с
-    # известной всем парой, то есть отменял бы решение владельца.
-    from app.core.config import settings
-    from app.features.auth.service import ensure_bootstrap_user
-
-    monkeypatch.setattr(settings, "app_bootstrap_login", "первый")
     await make_user(login="ivan")
-    await ensure_bootstrap_user(session)
+    headers = {"X-Real-IP": "10.0.0.8"}
+    await client.post(
+        "/api/auth/login",
+        json={"login": "ivan", "password": "мимо"},
+        headers=headers,
+    )
+    assert address_limiter.size() == 1
+    await client.post(
+        "/api/auth/login",
+        json={"login": "ivan", "password": "секрет"},
+        headers=headers,
+    )
+    assert address_limiter.size() == 0
 
-    logins = (await session.execute(select(User.login))).scalars().all()
-    assert logins == ["ivan"]
+
+async def test_attempts_are_counted_by_x_real_ip(client, make_user):
+    # Адрес берётся из X-Real-IP, который ставит nginx, а не из
+    # X-Forwarded-For: там цепочка, и первый сегмент прислал клиент — то
+    # есть ограничение по адресу обходится одним заголовком.
+    #
+    # Ключ проверяется вычитанием: сброс чужого ключа счётчик не меняет,
+    # сброс своего — опустошает. Иначе о том, ПО ЧЕМУ считали, тест не
+    # говорит ничего.
+    from app.core.rate_limit import address_limiter
+
+    await make_user(login="ivan")
+    await client.post(
+        "/api/auth/login",
+        json={"login": "ivan", "password": "мимо"},
+        headers={"X-Real-IP": "10.0.0.9", "X-Forwarded-For": "203.0.113.7"},
+    )
+    assert address_limiter.size() == 1
+    address_limiter.reset("203.0.113.7")
+    assert address_limiter.size() == 1, "отметка легла по X-Forwarded-For"
+    address_limiter.reset("10.0.0.9")
+    assert address_limiter.size() == 0
 
 
 async def test_login_records_last_login(client, session, make_user):
+    # Проверяется ЗАПИСЬ, а не присвоение. Тест, который просто читает
+    # пользователя через ту же сессию, зелен и без commit(): объект берётся
+    # из карты сессии вместе с атрибутом, присвоенным в памяти.
+    #
+    # В обвязке join_transaction_mode="create_savepoint": commit сервиса
+    # отпускает точку сохранения, и откат ниже до неё уже не достаёт.
+    # Присвоенное без commit откат отменяет. Что пережило откат — то
+    # записано; expire_all заставляет прочитать это из базы, а не из карты.
     await make_user(login="ivan")
     await client.post("/api/auth/login", json={"login": "ivan", "password": "секрет"})
+    await session.rollback()
+    session.expire_all()
     user = (
         await session.execute(select(User).where(User.login == "ivan"))
     ).scalar_one()
     assert user.last_login_at is not None
+
+
+async def test_bootstrap_login_follows_the_rule_of_the_form(session, monkeypatch):
+    # Первая учётная запись обязана нормализоваться ровно тем же типом, что
+    # и логин из формы. Рукописный `strip().lower()` расходился с ним
+    # дважды, и оба раза контур оставался без единого входа: питоновский
+    # str.strip() режет U+001C и клал в базу «admin», а форма отдаёт
+    # «\x1cadmin» — pydantic обрезает по Unicode White_Space, куда U+001C не
+    # входит. Воспроизведено.
+    #
+    # Отказ самозапечатывающийся: запись создана, таблица непуста,
+    # ensure_bootstrap_user второй раз не сработает, и починить это можно
+    # только прямым доступом к базе.
+    from app.features.auth.service import ensure_bootstrap_user
+
+    monkeypatch.setattr(settings, "app_bootstrap_login", "\x1cAdmin")
+    await ensure_bootstrap_user(session)
+
+    created = (await session.execute(select(User))).scalars().all()
+    assert [user.login for user in created] == ["\x1cadmin"]
+    assert created[0].role is Role.admin
+
+
+async def test_bootstrap_refuses_a_login_the_form_would_never_accept(
+    session, monkeypatch
+):
+    # `Админ Один` рукописная нормализация клала в базу как «админ один», а
+    # форма такой ввод не пропускает вовсе (`^\S+$`) — войти под этой
+    # записью было невозможно никогда. Негодное значение обязано ронять
+    # старт: контур без входа хуже, чем контур, который не поднялся.
+    from app.features.auth.service import ensure_bootstrap_user
+
+    monkeypatch.setattr(settings, "app_bootstrap_login", "Админ Один")
+    with pytest.raises(RuntimeError, match="APP_BOOTSTRAP_LOGIN"):
+        await ensure_bootstrap_user(session)
+    assert (await session.execute(select(User))).first() is None
+
+
+async def test_bootstrap_leaves_a_filled_table_alone(session, make_user, monkeypatch):
+    # Значение проверяется перед созданием записи, а не в начале функции, и
+    # это выбор: пока в таблице кто-то есть, APP_BOOTSTRAP_LOGIN ни на что не
+    # влияет, и ронять из-за него работающий контур на каждом перезапуске
+    # было бы отказом ради ничего. Заодно закреплена и вторая половина
+    # правила: непустая таблица не трогается — иначе каждый перезапуск
+    # возвращал бы отключённую запись admin с известной всем парой.
+    from app.features.auth.service import ensure_bootstrap_user
+
+    await make_user(login="ivan")
+    monkeypatch.setattr(settings, "app_bootstrap_login", "Админ Один")
+    await ensure_bootstrap_user(session)
+
+    logins = (await session.execute(select(User.login))).scalars().all()
+    assert logins == ["ivan"]
 
 
 async def test_revoked_session_stops_working(client, session, login_as):
@@ -4152,36 +4425,79 @@ Expected: FAIL — маршрутов `/api/auth/*` ещё нет.
 Над классом `User`:
 
 ```python
+LOGIN_MAX_LENGTH = 255
+
+
+def _fits_the_column(login: str) -> str:
+    """Проверяет длину ПОСЛЕ приведения регистра.
+
+    max_length у StringConstraints считается до приведения, а приведение
+    длину меняет: 200 турецких «İ» (U+0130) проверку проходят и превращаются
+    в 400 символов — lower() раскладывает каждую букву на две.
+    Воспроизведено.
+
+    Сегодня такой логин только не нашёлся бы в базе (вход делает SELECT), но
+    тот же тип берёт создание учётной записи, и там это
+    StringDataRightTruncation: пятисотка вместо отказа формы, а SQL с
+    параметрами уезжает в лог. Без этой проверки обещание ниже — «правило
+    описывает ровно ту колонку, рядом с которой лежит» — попросту неверно.
+    """
+    if len(login) > LOGIN_MAX_LENGTH:
+        # Текст по-русски и без значения: обработчик ошибок отдаёт его
+        # человеку как есть (см. _VALUE_ERROR_PREFIX в core/errors.py).
+        raise ValueError("Слишком длинное значение")
+    return login
+
+
+# Один вид логина на всё приложение.
+#
+# Тип лежит в `core`, а не в фиче входа, потому что его берут обе фичи —
+# и вход, и учётные записи, — а импорт одной фичи из другой import-linter
+# считает нарушением границы между ними. Место выбрано не наугад: правило
+# описывает ровно ту колонку, рядом с которой лежит.
+#
+# Приведение к нижнему регистру. Без него `Иван` и `иван` — две разные
+# учётные записи с общим бюджетом попыток: счётчик в `core/rate_limit.py`
+# ключи casefold-ит, а поиск пользователя в базе регистр различает. Одно из
+# двух обязано уступить, и уступает логин — у casefold в счётчике своё
+# обоснование, без него пятибуквенный логин даёт 32 корзины вместо одной.
+# Заодно логин, набранный не в том регистре, перестаёт молча не подходить.
+#
+# `^\S+$` — без пробельных символов: перевод строки внутри сломал бы разбор
+# токена, и такой пользователь молча не смог бы войти.
+#
+# Длина проверяется отдельным валидатором — после приведения, а не до; см.
+# _fits_the_column.
 Login = Annotated[
     str,
     StringConstraints(
         strip_whitespace=True,
         to_lower=True,
         min_length=1,
-        max_length=255,
         pattern=r"^\S+$",
     ),
+    AfterValidator(_fits_the_column),
+    # Предел объявляется в схеме отдельно, потому что проверяет его валидатор
+    # выше, а не StringConstraints. Описание схемы уходит в типы клиента, и
+    # без этой строки форма не знает, на чём обрывать ввод.
+    Field(json_schema_extra={"maxLength": LOGIN_MAX_LENGTH}),
 ]
 ```
 
-`Annotated` — из `typing`, `StringConstraints` — из `pydantic`.
+`Annotated` — из `typing`; `AfterValidator`, `Field` и `StringConstraints` —
+из `pydantic`.
 
-Тип живёт в `core`, а не в фиче входа, по требованию контракта
-независимости: его берут обе фичи — и вход, и учётные записи, — а импорт
-одной фичи из другой import-linter справедливо считает нарушением границы.
-Место выбрано не наугад: правило описывает ровно ту колонку, рядом с которой
-лежит.
+В самой модели длина колонки перестаёт быть отдельным числом:
 
-Что делает приведение к нижнему регистру. Без него `Иван` и `иван` — две
-разные учётные записи с общим бюджетом попыток: счётчик в
-`core/rate_limit.py` ключи casefold-ит, а поиск пользователя в базе регистр
-различает. Одно из двух обязано уступить, и уступает логин: у casefold в
-счётчике своё обоснование — без него пятибуквенный логин даёт 32 корзины
-вместо одной. Заодно исчезает главная неожиданность для человека: логин,
-набранный не в том регистре, перестаёт молча не подходить.
+```python
+    login: Mapped[str] = mapped_column(
+        String(LOGIN_MAX_LENGTH), unique=True, index=True
+    )
+```
 
-`^\S+$` — без пробельных символов: перевод строки внутри сломал бы разбор
-токена, и такой пользователь молча не смог бы войти.
+Литерал один на тип и на колонку намеренно. Разъедься они — и значение,
+прошедшее проверку, база отказалась бы принимать; отказ пришёл бы из
+драйвера, то есть пятисоткой вместо сообщения формы.
 
 - [ ] **Шаг 4: Написать `backend/app/features/auth/schemas.py`**
 
@@ -4219,14 +4535,15 @@ import math
 import time
 from datetime import UTC, datetime
 
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.core.config import ENV_FILE, settings
 from app.core.errors import RuleViolation
 from app.core.rate_limit import address_limiter, login_limiter
 from app.core.security import hash_password, sign_session_token, verify_password
-from app.core.users import User, UserStatus
+from app.core.users import Login, User, UserStatus
 from app.domain.roles import Role
 
 logger = logging.getLogger(__name__)
@@ -4242,8 +4559,51 @@ TOO_MANY = "Слишком много попыток. Попробуй чере�
 # Граница выравнивает ветки, только пока настоящая работа в неё
 # укладывается. scrypt занимает около 25 мс, под нагрузкой в пуле потоков
 # — до 60 мс, запас четырёхкратный. Если он однажды исчерпается, различие
-# вернётся молча, поэтому превышение пишется в лог.
+# вернётся молча, поэтому превышение пишется в лог — см.
+# _check_verification_time.
 MIN_RESPONSE_SECONDS = 0.25
+
+# Не чаще одной строки в минуту. Если scrypt действительно перестал
+# укладываться в границу, это верно для каждого входа, и без задвижки один
+# POST даёт одну строку WARNING в `<слаг>-logs` — единственный
+# диагностический канал контура. Сигнал должен быть заметен, а не утопить
+# собой всё остальное.
+ALARM_QUIET_SECONDS = 60.0
+_alarm_last_at: float | None = None
+
+
+def _check_verification_time(elapsed: float) -> None:
+    """Сообщает, что граница перестала прикрывать разницу веток.
+
+    Меряется ТОЛЬКО проверка пароля, а не время ответа целиком. Полное время
+    для этого не годится: в него входит ожидание соединения в пуле и очередь
+    в цикле событий — одинаковые для обеих веток и потому никакого различия
+    по времени не создающие. Замерено дважды. По полному времени: сорок
+    одновременных отказов по несуществующему логину давали 30 предупреждений,
+    хотя scrypt в этих запросах не вызывался вовсе; после возврата соединения
+    в пул (см. finish) этот случай исчез, но сто одновременных отказов с
+    проверкой пароля дали 38 предупреждений — там время уходило на ожидание
+    соединения. По времени самой проверки в тех же прогонах — ни одного.
+    Ложные срабатывания хуже молчания: их перестанут читать ровно до того,
+    как сигнал понадобится.
+
+    scrypt — единственная работа, которая есть в одной ветке и которой нет в
+    другой, то есть единственный источник различия по времени. Как только он
+    один перестаёт умещаться в границу, оракул возвращается.
+    """
+    global _alarm_last_at
+    if elapsed <= MIN_RESPONSE_SECONDS:
+        return
+    now = time.monotonic()
+    if _alarm_last_at is not None and now - _alarm_last_at < ALARM_QUIET_SECONDS:
+        return
+    _alarm_last_at = now
+    logger.warning(
+        "проверка пароля заняла %.0f мс при границе %.0f мс: выравнивание "
+        "времени ответа больше не скрывает разницу веток",
+        elapsed * 1000,
+        MIN_RESPONSE_SECONDS * 1000,
+    )
 
 
 async def authenticate(
@@ -4253,19 +4613,26 @@ async def authenticate(
     started = time.monotonic()
 
     async def finish() -> None:
+        # Соединение возвращается в пул ДО сна. Иначе один дешёвый
+        # неаутентифицированный POST держит одно из десяти соединений
+        # (pool_size=5 плюс overflow=5) целую четверть секунды. Замерено на
+        # прежнем варианте: сорок одновременных отказов занимали весь пул
+        # (10 из 10 занято), и посторонний `select 1` шёл 211 мс вместо 0,7
+        # мс — то есть форма входа без единого верного пароля укладывала все
+        # прочие маршруты, а дальше начинался pool_timeout.
+        #
+        # Именно rollback, а не close. close вдобавок отсоединяет объекты от
+        # сессии (expunge), а сессия здесь общая с вызывающим: в обвязке
+        # тестов она одна на весь тест, и отсоединённого пользователя уже не
+        # сохранить. rollback объекты только гасит (expire) — они
+        # перечитаются при следующем обращении.
+        #
+        # На успешном пути и на пути «слишком много попыток» вызов бесплатен:
+        # транзакции там нет — её закрыл commit или она не начиналась.
+        await session.rollback()
         remaining = MIN_RESPONSE_SECONDS - (time.monotonic() - started)
         if remaining > 0:
             await asyncio.sleep(remaining)
-        else:
-            # Работа не уложилась в границу — значит ветки перестали быть
-            # неразличимыми по времени. Молча это оставлять нельзя: оракул
-            # вернётся, и заметить его будет нечем.
-            logger.warning(
-                "вход занял %.0f мс при границе %.0f мс: выравнивание времени "
-                "ответа больше не работает",
-                (time.monotonic() - started) * 1000,
-                MIN_RESPONSE_SECONDS * 1000,
-            )
 
     # Два ограничителя с разными порогами: по логину строго, по адресу
     # мягко. Общий порог на адрес оставлял бы без входа весь офис за одним
@@ -4288,18 +4655,34 @@ async def authenticate(
         await session.execute(select(User).where(User.login == login))
     ).scalar_one_or_none()
 
-    # verify_password уходит в пул потоков намеренно. Один вызов scrypt
-    # занимает около 25 мс сплошного счёта, и вызванный напрямую он
-    # блокирует цикл событий целиком: замеряно — восемь проверок подряд
-    # держат цикл 195 мс, за которые он не проворачивается ни разу, то есть
-    # встают и все прочие запросы, включая проверку живости. Через пул те
-    # же восемь занимают 42 мс и цикл остаётся живым.
-    ok = (
+    ok = False
+    if (
         user is not None
         and user.status is UserStatus.active
         and user.password_hash is not None
-        and await asyncio.to_thread(verify_password, password, user.password_hash)
-    )
+    ):
+        # verify_password уходит в пул потоков намеренно. Один вызов scrypt
+        # занимает около 25 мс сплошного счёта, и вызванный напрямую он
+        # блокирует цикл событий целиком: замеряно — восемь проверок подряд
+        # держат цикл 195 мс, за которые он не проворачивается ни разу, то
+        # есть встают и все прочие запросы, включая проверку живости. Через
+        # пул те же восемь занимают 42 мс и цикл остаётся живым.
+        #
+        # Соединение на время этой проверки остаётся занятым: SELECT уже
+        # сделан, транзакция ещё открыта. Это настоящая работа (25–60 мс), а
+        # не сон, и убрать её из-под соединения можно только сняв нужные поля
+        # в локальные переменные и откатив сессию до scrypt — но тогда объект
+        # пользователя гаснет, и отметку last_login_at пришлось бы писать
+        # отдельным UPDATE. Замерено, во что обходится: сто одновременных
+        # отказов с проверкой пароля задерживают посторонний `select 1` на
+        # 314 мс. Столько одновременных попыток внутреннее приложение на
+        # десятки человек не увидит — счётчики пускают 5 на логин и 30 на
+        # адрес за 15 минут, — поэтому размен не сделан. Понадобится он на
+        # нагруженном контуре, и тогда причина уже написана.
+        verification_started = time.monotonic()
+        ok = await asyncio.to_thread(verify_password, password, user.password_hash)
+        _check_verification_time(time.monotonic() - verification_started)
+
     if not ok or user is None:
         await finish()
         raise RuleViolation(DENIED)
@@ -4311,6 +4694,41 @@ async def authenticate(
     await session.commit()
     await finish()
     return sign_session_token(user.login, issued_at_ms, settings.app_auth_secret)
+
+
+# Тот же тип, что проверяет логин из формы. Не копия правила: две записи
+# одного инварианта однажды разъезжаются — см. _bootstrap_login.
+_LOGIN = TypeAdapter(Login)
+
+
+def _bootstrap_login() -> str:
+    """APP_BOOTSTRAP_LOGIN, приведённый ровно тем же правилом, что и форма.
+
+    Здесь стоял рукописный `strip().lower()`, и он расходился с типом
+    дважды. `Админ Один` ложился в базу как «админ один», а форма такой ввод
+    не пропускает вовсе (`^\\S+$`) — войти было невозможно никогда.
+    `\\x1cadmin` ложился как «admin», а форма отдаёт «\\x1cadmin»: питоновский
+    str.strip() режет U+001C, а strip у pydantic (по Unicode White_Space) —
+    нет. Оба случая воспроизведены.
+
+    Отказ при этом самозапечатывающийся: запись создана, таблица больше не
+    пуста, ensure_bootstrap_user второй раз не сработает — и контур остаётся
+    без единого входа, без пути назад без прямого доступа к базе. Поэтому
+    негодное значение обязано ронять старт, а не создавать недостижимую
+    запись.
+    """
+    try:
+        return _LOGIN.validate_python(settings.app_bootstrap_login)
+    except ValidationError:
+        # Значение в текст не подставляется: сообщение уходит в лог старта, а
+        # в эту переменную по ошибке попадает и то, чему в логе не место.
+        # Правило описано словами — этого хватает, чтобы понять, что чинить.
+        raise RuntimeError(
+            "APP_BOOTSTRAP_LOGIN не годится в логин: нужны непустые символы "
+            "без пробелов, не длиннее 255. С таким значением первая учётная "
+            "запись завелась бы недостижимой: форма привела бы набранное к "
+            f"другому виду. Проверь {ENV_FILE}."
+        ) from None
 
 
 async def ensure_bootstrap_user(session: AsyncSession) -> None:
@@ -4329,11 +4747,11 @@ async def ensure_bootstrap_user(session: AsyncSession) -> None:
         return
     session.add(
         User(
-            # Тот же вид, что и у логина из формы: без приведения запись,
-            # заведённая как APP_BOOTSTRAP_LOGIN=Admin, оказалась бы
-            # недостижимой — форма привела бы ввод к «admin», а в базе
-            # лежало бы «Admin».
-            login=settings.app_bootstrap_login.strip().lower(),
+            # Проверка стоит здесь, а не выше по функции, намеренно: пока
+            # таблица непуста, значение переменной ни на что не влияет, и
+            # ронять из-за него работающий контур на каждом перезапуске было
+            # бы отказом ради ничего.
+            login=_bootstrap_login(),
             name=settings.app_bootstrap_name,
             role=Role.admin,
             # Тоже в пул потоков: hash_password стоит столько же, сколько
@@ -4354,13 +4772,11 @@ from fastapi import APIRouter, Request, Response
 
 from app.core.config import settings
 from app.core.deps import CurrentUserDep, SessionDep
-from app.core.security import AUTH_COOKIE
+from app.core.security import AUTH_COOKIE, SESSION_MAX_AGE_SECONDS
 from app.features.auth import service
 from app.features.auth.schemas import CurrentUserResponse, LoginRequest, OkResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-COOKIE_MAX_AGE = 7 * 24 * 60 * 60
 
 
 def _client_ip(request: Request) -> str:
@@ -4387,7 +4803,11 @@ async def login(
     response.set_cookie(
         AUTH_COOKIE,
         token,
-        max_age=COOKIE_MAX_AGE,
+        # Срок куки и срок токена — одна политика и одна константа. Двумя
+        # константами они разъезжаются молча, и обе стороны плохи: короче —
+        # человека выкидывает раньше срока без причины; длиннее — SPA видит
+        # куку, считает себя вошедшим и получает 401 на каждый запрос.
+        max_age=SESSION_MAX_AGE_SECONDS,
         httponly=True,
         # Lax, а не Strict: при Strict кука не уезжает при переходе по
         # ссылке из письма или мессенджера, и человек видит форму входа,
@@ -4439,7 +4859,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 - [ ] **Шаг 8: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_auth.py -v`
-Expected: PASS, 16 passed
+Expected: PASS, 26 passed
 
 - [ ] **Шаг 9: Коммит**
 
