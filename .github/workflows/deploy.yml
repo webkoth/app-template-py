@@ -13,7 +13,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: apptemplate_dev
+          POSTGRES_DB: apptemplatepy_dev
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres"
@@ -26,8 +26,8 @@ jobs:
       # сбрасывает схему целиком, и совпадение однажды стоило схемы рабочей
       # базы. Один адрес в обеих переменных ронял бы каждый прогон CI на
       # сборе тестов, ещё до первой проверки.
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/apptemplate_dev
-      DATABASE_URL_E2E: postgresql://postgres:postgres@localhost:5432/apptemplate_e2e
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/apptemplatepy_dev
+      DATABASE_URL_E2E: postgresql://postgres:postgres@localhost:5432/apptemplatepy_e2e
       APP_ENV: local
       APP_AUTH_SECRET: e2e-secret-not-used-anywhere-real-000000
       COOKIE_SECURE: "false"
@@ -40,7 +40,7 @@ jobs:
       - name: Завести отдельную базу под тесты
         env:
           PGPASSWORD: postgres
-        run: psql -h localhost -U postgres -c 'CREATE DATABASE apptemplate_e2e'
+        run: psql -h localhost -U postgres -c 'CREATE DATABASE apptemplatepy_e2e'
 
       - uses: astral-sh/setup-uv@v10
         with:
@@ -75,6 +75,21 @@ jobs:
         working-directory: frontend
       - run: npm run test
         working-directory: frontend
+
+      # Тот же шаг, что в ci.yml, и он здесь не лишний: прямой push в main
+      # минуя pull request проверок ветки не проходит вовсе — и уехал бы на
+      # контур с типами клиента, разошедшимися со схемой. Экран показывал бы
+      # поля, которых сервер больше не отдаёт, и виноватым выглядел бы
+      # фронтенд.
+      - name: Типы клиента совпадают со схемой
+        run: |
+          cd backend && uv run python -m app.openapi > /tmp/openapi.json
+          cd ../frontend && npx openapi-typescript /tmp/openapi.json -o /tmp/schema.d.ts
+          diff -u src/api/schema.d.ts /tmp/schema.d.ts || {
+            echo "::error::Типы клиента разошлись со схемой. Выполни: make openapi"
+            exit 1
+          }
+
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
       - run: npx playwright test
@@ -85,7 +100,12 @@ jobs:
     runs-on: ubuntu-latest
     concurrency: deploy
     env:
-      SLUG: apptemplate
+      # Слаг НЕ «apptemplate»: так называется TS-шаблон, и контур у них
+      # общий. Совпади слаг — и совпадут разом каталог /var/www, имя
+      # процесса pm2, база с ролью, vhost в nginx и каталог резервных
+      # копий: доставка одного шаблона молча затирала бы другой. Слаг
+      # обязан совпасть с тем, с которым будет вызван app-provision.
+      SLUG: apptemplatepy
     steps:
       - uses: actions/checkout@v5
 

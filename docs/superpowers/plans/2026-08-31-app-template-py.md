@@ -579,14 +579,14 @@ Expected: PASS, 13 passed
 
 ```dotenv
 # Локальная разработка. На контуре этот файл пишет app-provision.
-DATABASE_URL="postgresql://apptemplate:apptemplate@localhost:5432/apptemplatepy_dev"
+DATABASE_URL="postgresql://apptemplatepy:apptemplatepy@localhost:5432/apptemplatepy_dev"
 APP_ENV="local"
 # openssl rand -hex 32
 APP_AUTH_SECRET=""
 COOKIE_SECURE="false"
 
 # Отдельная база под e2e: тесты меняют данные.
-DATABASE_URL_E2E="postgresql://apptemplate:apptemplate@localhost:5432/apptemplatepy_e2e"
+DATABASE_URL_E2E="postgresql://apptemplatepy:apptemplatepy@localhost:5432/apptemplatepy_e2e"
 
 # Первая учётная запись. Заводится только при пустой таблице пользователей.
 # Пустое значение логина или пароля выключает создание.
@@ -2139,6 +2139,11 @@ ruff_format.options = format REVISION_SCRIPT_FILENAME
 На контуре роль заводит провижинер (`<слаг>_app` со сгенерированным
 паролем), локально — это ручной шаг установки.
 
+Имя роли — тоже `apptemplatepy`. Оно одно на всё: слаг контура, базы, роль,
+заголовок схемы, каталог резервных копий. Держать их в двух видах значит
+переименовывать при установке в двух видах — и однажды переименовать в
+одном.
+
 Имена баз — `apptemplatepy_*`, а не `apptemplate_*`, и это не описка.
 TS-шаблон `app-template-ts` берёт по умолчанию ровно `apptemplate_dev` и
 `apptemplate_e2e`. У кого оба шаблона лежат рядом — а это обычный случай,
@@ -2147,9 +2152,9 @@ TS-шаблон `app-template-ts` берёт по умолчанию ровно 
 предложит удалить незнакомое. Проверено на живой машине.
 
 ```bash
-psql -d postgres -c "CREATE ROLE apptemplate LOGIN PASSWORD 'apptemplate'"
-createdb -O apptemplate apptemplatepy_dev
-createdb -O apptemplate apptemplatepy_e2e
+psql -d postgres -c "CREATE ROLE apptemplatepy LOGIN PASSWORD 'apptemplatepy'"
+createdb -O apptemplatepy apptemplatepy_dev
+createdb -O apptemplatepy apptemplatepy_e2e
 ```
 
 `-O` задаёт владельца при создании. Отдельным `ALTER DATABASE ... OWNER`
@@ -7553,11 +7558,6 @@ app.include_router(audit_router, prefix="/api")
 # маршрутов API, иначе он поглотит их.
 mount_frontend(app)
 ```
-
-Импорт `mount_frontend` — из `app.core.static`. Итоговый файл должен
-выглядеть так:
-
-```python
 """Сборка приложения."""
 
 import logging
@@ -7603,7 +7603,12 @@ def create_app() -> FastAPI:
     смотрит, что перехватчик зарегистрирован последним.
     """
     app = FastAPI(
-        title="apptemplate",
+        # Имя шаблона одно на всё: слаг контура, базы, роль, заголовок
+        # схемы. «apptemplate» занят соседним TS-шаблоном, а контур у них
+        # общий — совпади имя, и совпали бы каталог /var/www, процесс pm2,
+        # база и vhost. При установке это имя меняется на имя приложения,
+        # и менять его надо в одном виде, а не в двух.
+        title="apptemplatepy",
         lifespan=lifespan,
         # Интерактивные страницы FastAPI выключены: на контуре они висели бы
         # открытым описанием API. Вместе с ними выключен и openapi_url —

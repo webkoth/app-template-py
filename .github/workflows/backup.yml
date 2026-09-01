@@ -18,7 +18,10 @@ jobs:
           ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
           ssh deploy@${{ secrets.SERVER_HOST }} 'bash -s' <<'EOF'
           set -euo pipefail
-          SLUG=apptemplate
+          # Тот же слаг, что в deploy.yml. «apptemplate» занят TS-шаблоном:
+          # контур общий, и совпадение слагов означало бы общий каталог
+          # копий — проверка смотрела бы на чужие.
+          SLUG=apptemplatepy
           LATEST=$(ls -t /home/deploy/backups/$SLUG/*.sql.gz 2>/dev/null | head -1 || true)
           [ -n "$LATEST" ] || { echo "копий нет вообще"; exit 1; }
           AGE_H=$(( ( $(date +%s) - $(stat -c %Y "$LATEST") ) / 3600 ))
