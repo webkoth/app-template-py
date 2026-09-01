@@ -4029,6 +4029,42 @@ async def test_me_returns_current_user(client, login_as):
     assert body["role"] == "editor"
 
 
+async def test_me_marks_the_bootstrap_account(client, login_as, monkeypatch):
+    # Предупреждение на первом экране висит по этому признаку. Считать его на
+    # клиенте нечем: он не знает ни настроенного логина, ни того, убраны ли
+    # переменные с контура.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "app_bootstrap_login", "шеф")
+    await login_as(login="шеф")
+    assert (await client.get("/api/auth/me")).json()["using_bootstrap_account"] is True
+
+
+async def test_me_does_not_mark_an_ordinary_account(client, login_as, monkeypatch):
+    # Обратная сторона: предупреждение, которое висит всегда, читать
+    # перестают. Сравнение с литералом «admin» промахивалось бы здесь —
+    # владелец, назвавший собственную запись admin, видел бы его вечно.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "app_bootstrap_login", "шеф")
+    await login_as(login="ivan")
+    assert (await client.get("/api/auth/me")).json()["using_bootstrap_account"] is False
+
+
+async def test_me_stops_marking_when_bootstrap_is_switched_off(
+    client, login_as, monkeypatch
+):
+    # Признак гаснет сам, когда владелец убирает APP_BOOTSTRAP_* из .env
+    # контура — последний шаг установки. Иначе предупреждение осталось бы
+    # висеть на выполненной работе.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "app_bootstrap_login", "шеф")
+    await login_as(login="шеф")
+    monkeypatch.setattr(settings, "app_bootstrap_password", "")
+    assert (await client.get("/api/auth/me")).json()["using_bootstrap_account"] is False
+
+
 async def test_me_without_cookie_is_401(client):
     response = await client.get("/api/auth/me")
     assert response.status_code == 401
@@ -4556,6 +4592,13 @@ class CurrentUserResponse(BaseModel):
     login: str
     name: str
     role: Role
+    # Считает сервер, а не клиент. Клиент не знает ни APP_BOOTSTRAP_LOGIN, ни
+    # того, убраны ли переменные с контура, — а сравнение с литералом
+    # «admin» промахивается в обе стороны разом: при своём имени учётной
+    # записи предупреждение не покажется никогда, а владелец, назвавший
+    # собственную запись admin, будет видеть его вечно и перестанет читать
+    # предупреждения вообще.
+    using_bootstrap_account: bool
 
 
 class OkResponse(BaseModel):
@@ -4735,11 +4778,11 @@ async def authenticate(
 
 
 # Тот же тип, что проверяет логин из формы. Не копия правила: две записи
-# одного инварианта однажды разъезжаются — см. _bootstrap_login.
+# одного инварианта однажды разъезжаются — см. bootstrap_login.
 _LOGIN = TypeAdapter(Login)
 
 
-def _bootstrap_login() -> str:
+def bootstrap_login() -> str:
     """APP_BOOTSTRAP_LOGIN, приведённый ровно тем же правилом, что и форма.
 
     Здесь стоял рукописный `strip().lower()`, и он расходился с типом
@@ -4789,7 +4832,7 @@ async def ensure_bootstrap_user(session: AsyncSession) -> None:
             # таблица непуста, значение переменной ни на что не влияет, и
             # ронять из-за него работающий контур на каждом перезапуске было
             # бы отказом ради ничего.
-            login=_bootstrap_login(),
+            login=bootstrap_login(),
             name=settings.app_bootstrap_name,
             role=Role.admin,
             # Тоже в пул потоков: hash_password стоит столько же, сколько
@@ -4813,6 +4856,7 @@ from app.core.deps import CurrentUserDep, SessionDep
 from app.core.security import AUTH_COOKIE, SESSION_MAX_AGE_SECONDS
 from app.features.auth import service
 from app.features.auth.schemas import CurrentUserResponse, LoginRequest, OkResponse
+from app.features.auth.service import bootstrap_login
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -4865,8 +4909,16 @@ async def logout(response: Response) -> OkResponse:
 
 @router.get("/me", response_model=CurrentUserResponse)
 async def me(user: CurrentUserDep) -> CurrentUserResponse:
+    # Признак гаснет сам, когда владелец делает то, что предписано после
+    # установки: заводит свою запись и убирает APP_BOOTSTRAP_* из .env
+    # контура. Пустые переменные выключают bootstrap — см. bootstrap_enabled.
+    using_bootstrap = settings.bootstrap_enabled and user.login == bootstrap_login()
     return CurrentUserResponse(
-        id=user.id, login=user.login, name=user.name, role=user.role
+        id=user.id,
+        login=user.login,
+        name=user.name,
+        role=user.role,
+        using_bootstrap_account=using_bootstrap,
     )
 ```
 
@@ -4897,7 +4949,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 - [ ] **Шаг 8: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_auth.py -v`
-Expected: PASS, 26 passed
+Expected: PASS, 29 passed
 
 - [ ] **Шаг 9: Коммит**
 
@@ -6825,6 +6877,8 @@ export interface CurrentUser {
   login: string
   name: string
   role: Role
+  /** Вход идёт под учётной записью из APP_BOOTSTRAP_*. Считает сервер. */
+  using_bootstrap_account: boolean
 }
 
 const RANK: Role[] = ["viewer", "editor", "admin"]
@@ -7206,7 +7260,11 @@ import type { CurrentUser } from "@/lib/auth"
  * висит, пока под ней работают: контур открыт снаружи.
  */
 export function BootstrapWarning({ user }: { user: CurrentUser }) {
-  if (user.login !== "admin") return null
+  // Признак считает сервер. Сравнение с литералом "admin" промахивалось бы в
+  // обе стороны: при своём имени учётной записи предупреждение не показалось
+  // бы никогда, а владелец, назвавший собственную запись admin, видел бы его
+  // вечно — и перестал бы читать предупреждения вообще.
+  if (!user.using_bootstrap_account) return null
   return (
     <Alert variant="destructive" className="mb-6">
       <TriangleAlert className="size-4" />
