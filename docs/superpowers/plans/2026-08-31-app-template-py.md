@@ -4408,22 +4408,18 @@ async def test_login_records_last_login(client, session, make_user):
 
 async def test_bootstrap_login_follows_the_rule_of_the_form(session, monkeypatch):
     # Первая учётная запись обязана нормализоваться ровно тем же типом, что
-    # и логин из формы. Рукописный `strip().lower()` расходился с ним
-    # дважды, и оба раза контур оставался без единого входа: питоновский
-    # str.strip() режет U+001C и клал в базу «admin», а форма отдаёт
-    # «\x1cadmin» — pydantic обрезает по Unicode White_Space, куда U+001C не
-    # входит. Воспроизведено.
+    # и логин из формы: обрезка и приведение регистра — не рукописные.
     #
-    # Отказ самозапечатывающийся: запись создана, таблица непуста,
+    # Отказ здесь самозапечатывающийся: запись создана, таблица непуста,
     # ensure_bootstrap_user второй раз не сработает, и починить это можно
     # только прямым доступом к базе.
     from app.features.auth.service import ensure_bootstrap_user
 
-    monkeypatch.setattr(settings, "app_bootstrap_login", "\x1cAdmin")
+    monkeypatch.setattr(settings, "app_bootstrap_login", " Admin ")
     await ensure_bootstrap_user(session)
 
     created = (await session.execute(select(User))).scalars().all()
-    assert [user.login for user in created] == ["\x1cadmin"]
+    assert [user.login for user in created] == ["admin"]
     assert created[0].role is Role.admin
 
 
@@ -4432,14 +4428,25 @@ async def test_bootstrap_refuses_a_login_the_form_would_never_accept(
 ):
     # `Админ Один` рукописная нормализация клала в базу как «админ один», а
     # форма такой ввод не пропускает вовсе (`^\S+$`) — войти под этой
-    # записью было невозможно никогда. Негодное значение обязано ронять
-    # старт: контур без входа хуже, чем контур, который не поднялся.
+    # записью было невозможно никогда.
+    #
+    # `\x1cAdmin` — то же расхождение с другой стороны, и раньше оно
+    # заводило запись молча: питоновский str.strip() режет U+001C и клал в
+    # базу «admin», а pydantic обрезает по Unicode White_Space, куда U+001C
+    # не входит, — форма отдала бы «\x1cadmin». Теперь управляющие символы
+    # в логине запрещены целиком (см. no_control_characters в core/users.py),
+    # и значение отвергается вместе с остальными негодными. Оба случая
+    # воспроизведены.
+    #
+    # Негодное значение обязано ронять старт: контур без входа хуже, чем
+    # контур, который не поднялся.
     from app.features.auth.service import ensure_bootstrap_user
 
-    monkeypatch.setattr(settings, "app_bootstrap_login", "Админ Один")
-    with pytest.raises(RuntimeError, match="APP_BOOTSTRAP_LOGIN"):
-        await ensure_bootstrap_user(session)
-    assert (await session.execute(select(User))).first() is None
+    for value in ["Админ Один", "\x1cAdmin"]:
+        monkeypatch.setattr(settings, "app_bootstrap_login", value)
+        with pytest.raises(RuntimeError, match="APP_BOOTSTRAP_LOGIN"):
+            await ensure_bootstrap_user(session)
+        assert (await session.execute(select(User))).first() is None, value
 
 
 async def test_bootstrap_leaves_a_filled_table_alone(session, make_user, monkeypatch):
@@ -4570,7 +4577,12 @@ def _fits_the_column(login: str) -> str:
 # Заодно логин, набранный не в том регистре, перестаёт молча не подходить.
 #
 # `^\S+$` — без пробельных символов: перевод строки внутри сломал бы разбор
-# токена, и такой пользователь молча не смог бы войти.
+# токена, и такой пользователь молча не смог бы войти. Управляющие символы
+# этим шаблоном НЕ отсеиваются: NUL — не пробельный символ, и `\S` его
+# пропускает. Отсюда отдельный no_control_characters — тот же, что и у
+# обычного текста; без него логин с NUL доходит до вставки, PostgreSQL его
+# не принимает, и отказ формы превращается в пятисотку с хешем пароля в
+# трейсбеке.
 #
 # Длина проверяется отдельным валидатором — после приведения, а не до; см.
 # _fits_the_column.
@@ -4583,6 +4595,7 @@ Login = Annotated[
         pattern=r"^\S+$",
     ),
     AfterValidator(_fits_the_column),
+    AfterValidator(no_control_characters),
     # Предел объявляется в схеме отдельно, потому что проверяет его валидатор
     # выше, а не StringConstraints. Описание схемы уходит в типы клиента, и
     # без этой строки форма не знает, на чём обрывать ввод.
@@ -4591,7 +4604,13 @@ Login = Annotated[
 ```
 
 `Annotated` — из `typing`; `AfterValidator`, `Field` и `StringConstraints` —
-из `pydantic`.
+из `pydantic`; `no_control_characters` — из `app.domain.text` (модуль
+появляется в задаче 20, шаг 3; `app.core` вправе импортировать `app.domain`,
+контракт запрещает только обратное).
+
+Запрет управляющих символов нужен и логину: `^\S+$` его не даёт. NUL — не
+пробельный символ, поэтому `\S` его пропускает, а PostgreSQL текст с NUL не
+принимает вовсе — логин с ним доходил бы до вставки и падал пятисоткой.
 
 В самой модели длина колонки перестаёт быть отдельным числом:
 
@@ -5711,16 +5730,16 @@ async def test_update_writes_audit_with_the_previous_value(
     target = await make_user(login="ivan", role=Role.viewer)
     await client.patch(f"/api/users/{target.id}", json={"role": "editor"})
     entry = (
-        await session.execute(select(AuditLog).where(AuditLog.action == "update"))
-    ).scalars().one()
+        (await session.execute(select(AuditLog).where(AuditLog.action == "update")))
+        .scalars()
+        .one()
+    )
     assert entry.entity_id == str(target.id)
     assert "ivan" in entry.detail
     assert "viewer" in entry.detail and "editor" in entry.detail
 
 
-async def test_repeating_the_same_change_is_not_an_error(
-    client, login_as, make_user
-):
+async def test_repeating_the_same_change_is_not_an_error(client, login_as, make_user):
     # Двойной клик или повтор после обрыва связи. Изменение уже применено, и
     # красное на это человек видеть не должен.
     await login_as(role=Role.admin, login="boss")
@@ -6095,7 +6114,6 @@ PlainText = Annotated[
 ```python
 import uuid
 from datetime import datetime
-from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -6247,7 +6265,11 @@ async def create_user(
     # читается только сверкой UUID с живой базой — а журнал обещает быть
     # читаемым сам по себе и переживать учётную запись.
     write_audit(
-        session, actor, "create", "User", str(user.id),
+        session,
+        actor,
+        "create",
+        "User",
+        str(user.id),
         f"{user.login}, роль {payload.role.value}",
     )
     await session.commit()
@@ -6296,6 +6318,13 @@ async def update_user(
     losing_admin = (
         user.role is Role.admin
         and user.status is UserStatus.active
+        # Про себя ниже стоят два отдельных запрета, и они точнее: у них есть
+        # имя поля и текст про «самого себя». Без этого условия инвариант
+        # срабатывает первым и отвечает «Это последний администратор контура»
+        # без поля — test_cannot_demote_self это и поймал. Заодно единственный
+        # админ, понижающий себя, доходил бы до инварианта ОДНИМ запросом, а
+        # тот существует ради одновременных: см. active_admins_besides.
+        and str(user.id) != actor_id
         and (
             (payload.role is not None and payload.role is not Role.admin)
             or payload.status is UserStatus.disabled
