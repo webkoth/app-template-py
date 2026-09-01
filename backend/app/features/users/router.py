@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 
 from app.core.deps import CurrentUser, SessionDep, require_role
 from app.domain.roles import Role
@@ -33,10 +33,11 @@ async def update_user(
     session: SessionDep,
     actor: CurrentUser = AdminDep,
 ) -> UserOut:
-    try:
-        user = await service.update_user(
-            session, user_id, payload, actor.id, actor.login
-        )
-    except LookupError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    # Ни try, ни except: «записи нет» — своё исключение с обработчиком в
+    # core/errors.py. Здесь стоял `except LookupError` с выносом `str(exc)`
+    # наружу, и то и другое оказалось дорого: LookupError — предок KeyError
+    # и IndexError, поэтому любой такой сбой внутри сервиса объявлялся «не
+    # найдено», а текст чужого исключения уезжал клиенту. Воспроизведено на
+    # строке с ролью, которой ещё нет в коде.
+    user = await service.update_user(session, user_id, payload, actor.id, actor.login)
     return UserOut.model_validate(user)

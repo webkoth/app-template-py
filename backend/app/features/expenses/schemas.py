@@ -1,8 +1,10 @@
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.domain.text import PlainText
 
 # Категории перечислены здесь литералами намеренно. Literal[CATEGORIES] из
 # переменной в рантайме работает, но mypy такой формы не принимает, и под
@@ -32,14 +34,13 @@ class ExpenseOut(BaseModel):
 
 
 class CreateExpenseRequest(BaseModel):
+    # Лишнее поле — ошибка, а не мусор, который молча выбрасывают.
+    model_config = ConfigDict(extra="forbid")
+
     # Дата и сумма приходят строками и разбираются доменом: разбор — правило
     # предметной области, и он обязан быть авторитетным на сервере.
     date: str = Field(min_length=1)
-    # Обрезка ДО проверки длины: при `Field(min_length=1)` назначение из
-    # одних пробелов проходит и ложится в базу пустым.
-    title: Annotated[
-        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
-    ]
+    title: PlainText
     category: Category
     amount: str = Field(min_length=1)
 

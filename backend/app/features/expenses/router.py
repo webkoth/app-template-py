@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 
 from app.core.deps import CurrentUser, SessionDep, require_role
 from app.domain.roles import Role
@@ -47,8 +47,8 @@ async def create_expense(
 async def delete_expense(
     expense_id: uuid.UUID, session: SessionDep, actor: CurrentUser = EditorDep
 ) -> dict[str, bool]:
-    try:
-        await service.delete_expense(session, expense_id, actor.login)
-    except LookupError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    # Без try: «расхода нет» — своё исключение с обработчиком в
+    # core/errors.py. `except LookupError` ловил бы заодно KeyError и
+    # IndexError изнутри сервиса и объявлял их отсутствием записи.
+    await service.delete_expense(session, expense_id, actor.login)
     return {"ok": True}

@@ -1,11 +1,11 @@
 import uuid
 from datetime import datetime
-from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.users import Login, UserStatus
 from app.domain.roles import Role
+from app.domain.text import PlainText
 
 # Восемь символов — не про стойкость, а про то, чтобы не заводили «123».
 # Настоящую защиту даёт ограничение попыток входа.
@@ -29,15 +29,15 @@ class UserOut(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
+    # Лишнее поле — ошибка, а не мусор, который молча выбрасывают. Без этого
+    # `{"login": ..., "status": "disabled"}` отвечает 201 и заводит запись
+    # АКТИВНОЙ: отправитель уверен, что завёл отключённую. Воспроизведено.
+    model_config = ConfigDict(extra="forbid")
+
     # Тот же тип, что и у формы входа: логин хранится в нижнем регистре,
     # иначе `Иван` и `иван` стали бы двумя записями с общим бюджетом попыток.
     login: Login
-    # Обрезка ДО проверки длины. При `Field(min_length=1)` имя из одних
-    # пробелов проходит проверку и ложится в базу пустым — в списке
-    # пользователей такая строка выглядит как сбой отрисовки.
-    name: Annotated[
-        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
-    ]
+    name: PlainText
     role: Role
     password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=1024)
 
@@ -47,13 +47,26 @@ class CreateUserRequest(BaseModel):
         # Восьми символов мало, если все они цифры: дата рождения, телефон и
         # «12345678» проходят по длине и подбираются первыми. Запрет ровно
         # тот же, что в app-template-ts, и по той же причине.
-        if value.isdigit():
+        #
+        # Проверяется обрезанное значение, а хранится исходное. Обрезка
+        # только ради проверки: пароль «20260831 » — та же дата, и запрет
+        # обходился одним пробелом в конце. Менять сам пароль нельзя, пробел
+        # в нём — законный символ, и человек набрал именно его.
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Пароль из одних пробелов не годится")
+        if stripped.isdigit():
             raise ValueError("Пароль из одних цифр не годится")
         return value
 
 
 class UpdateUserRequest(BaseModel):
     """Частичное обновление: приходит только то, что меняют."""
+
+    # Без запрета лишнего `{"role": "editor", "name": "Новое"}` отвечает 200,
+    # имя при этом не меняется, и признака того, что половину просьбы
+    # выбросили, нет никакого.
+    model_config = ConfigDict(extra="forbid")
 
     role: Role | None = None
     status: UserStatus | None = None

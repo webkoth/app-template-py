@@ -23,6 +23,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
 from app.domain.roles import Role
+from app.domain.text import no_control_characters
 
 
 class UserStatus(StrEnum):
@@ -69,7 +70,12 @@ def _fits_the_column(login: str) -> str:
 # Заодно логин, набранный не в том регистре, перестаёт молча не подходить.
 #
 # `^\S+$` — без пробельных символов: перевод строки внутри сломал бы разбор
-# токена, и такой пользователь молча не смог бы войти.
+# токена, и такой пользователь молча не смог бы войти. Управляющие символы
+# этим шаблоном НЕ отсеиваются: NUL — не пробельный символ, и `\S` его
+# пропускает. Отсюда отдельный no_control_characters — тот же, что и у
+# обычного текста; без него логин с NUL доходит до вставки, PostgreSQL его
+# не принимает, и отказ формы превращается в пятисотку с хешем пароля в
+# трейсбеке.
 #
 # Длина проверяется отдельным валидатором — после приведения, а не до; см.
 # _fits_the_column.
@@ -82,6 +88,7 @@ Login = Annotated[
         pattern=r"^\S+$",
     ),
     AfterValidator(_fits_the_column),
+    AfterValidator(no_control_characters),
     # Предел объявляется в схеме отдельно, потому что проверяет его валидатор
     # выше, а не StringConstraints. Описание схемы уходит в типы клиента, и
     # без этой строки форма не знает, на чём обрывать ввод.

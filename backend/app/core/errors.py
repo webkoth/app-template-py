@@ -71,6 +71,29 @@ class RuleViolation(Exception):
         self.field = field
 
 
+class RecordNotFound(Exception):
+    """Записи нет. Ожидаемое, отвечает 404.
+
+    Свой класс, а не `LookupError`. Роутеры ловили `LookupError` и выносили
+    наружу `str(exc)` — и то и другое оказалось дорого. `LookupError` —
+    предок `KeyError` и `IndexError`, поэтому ЛЮБОЙ такой сбой внутри
+    сервиса объявлялся «не найдено»: воспроизведено на строке с ролью,
+    которой ещё нет в коде (обычный порядок выката миграции), — запрос
+    вернул 404 с текстом «'owner' is not among the defined enum values.
+    Enum name: role. Possible values: viewer, editor, admin». Настоящий сбой
+    выдан за отсутствие записи, внутренности уехали клиенту вопреки правилу
+    этого же модуля, и в лог не попало ничего: до обработчика пятисотки дело
+    не дошло.
+
+    Текст ответа задаёт тот, кто бросает, — но это НАШ текст, а не
+    сообщение чужого исключения.
+    """
+
+    def __init__(self, message: str = "Запись не найдена") -> None:
+        super().__init__(message)
+        self.message = message
+
+
 def _printable(text: str) -> str:
     """Убирает из текста то, что невозможно отправить.
 
@@ -140,6 +163,15 @@ def register_error_handlers(app: FastAPI) -> None:
                 # пользовательского ввода, что и текст, и незащищённый
                 # суррогат в нём роняет построение ответа ровно так же.
                 field=_printable(exc.field) if exc.field else None,
+            ),
+        )
+
+    @app.exception_handler(RecordNotFound)
+    async def _missing(_: Request, exc: RecordNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=Envelope(
+                error=_printable(exc.message) or FALLBACK_MESSAGE, field=None
             ),
         )
 

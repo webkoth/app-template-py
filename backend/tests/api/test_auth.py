@@ -508,22 +508,18 @@ async def test_login_records_last_login(client, session, make_user):
 
 async def test_bootstrap_login_follows_the_rule_of_the_form(session, monkeypatch):
     # Первая учётная запись обязана нормализоваться ровно тем же типом, что
-    # и логин из формы. Рукописный `strip().lower()` расходился с ним
-    # дважды, и оба раза контур оставался без единого входа: питоновский
-    # str.strip() режет U+001C и клал в базу «admin», а форма отдаёт
-    # «\x1cadmin» — pydantic обрезает по Unicode White_Space, куда U+001C не
-    # входит. Воспроизведено.
+    # и логин из формы: обрезка и приведение регистра — не рукописные.
     #
-    # Отказ самозапечатывающийся: запись создана, таблица непуста,
+    # Отказ здесь самозапечатывающийся: запись создана, таблица непуста,
     # ensure_bootstrap_user второй раз не сработает, и починить это можно
     # только прямым доступом к базе.
     from app.features.auth.service import ensure_bootstrap_user
 
-    monkeypatch.setattr(settings, "app_bootstrap_login", "\x1cAdmin")
+    monkeypatch.setattr(settings, "app_bootstrap_login", " Admin ")
     await ensure_bootstrap_user(session)
 
     created = (await session.execute(select(User))).scalars().all()
-    assert [user.login for user in created] == ["\x1cadmin"]
+    assert [user.login for user in created] == ["admin"]
     assert created[0].role is Role.admin
 
 
@@ -532,14 +528,25 @@ async def test_bootstrap_refuses_a_login_the_form_would_never_accept(
 ):
     # `Админ Один` рукописная нормализация клала в базу как «админ один», а
     # форма такой ввод не пропускает вовсе (`^\S+$`) — войти под этой
-    # записью было невозможно никогда. Негодное значение обязано ронять
-    # старт: контур без входа хуже, чем контур, который не поднялся.
+    # записью было невозможно никогда.
+    #
+    # `\x1cAdmin` — то же расхождение с другой стороны, и раньше оно
+    # заводило запись молча: питоновский str.strip() режет U+001C и клал в
+    # базу «admin», а pydantic обрезает по Unicode White_Space, куда U+001C
+    # не входит, — форма отдала бы «\x1cadmin». Теперь управляющие символы
+    # в логине запрещены целиком (см. no_control_characters в core/users.py),
+    # и значение отвергается вместе с остальными негодными. Оба случая
+    # воспроизведены.
+    #
+    # Негодное значение обязано ронять старт: контур без входа хуже, чем
+    # контур, который не поднялся.
     from app.features.auth.service import ensure_bootstrap_user
 
-    monkeypatch.setattr(settings, "app_bootstrap_login", "Админ Один")
-    with pytest.raises(RuntimeError, match="APP_BOOTSTRAP_LOGIN"):
-        await ensure_bootstrap_user(session)
-    assert (await session.execute(select(User))).first() is None
+    for value in ["Админ Один", "\x1cAdmin"]:
+        monkeypatch.setattr(settings, "app_bootstrap_login", value)
+        with pytest.raises(RuntimeError, match="APP_BOOTSTRAP_LOGIN"):
+            await ensure_bootstrap_user(session)
+        assert (await session.execute(select(User))).first() is None, value
 
 
 async def test_bootstrap_leaves_a_filled_table_alone(session, make_user, monkeypatch):

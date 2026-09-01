@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.errors import RuleViolation
+from app.core.errors import RecordNotFound, RuleViolation
 from app.domain.dates import parse_date_input_value
 from app.domain.expenses import CategoryTotal, totals_by_category
 from app.domain.money import MAX_AMOUNT_MINOR, format_money, parse_money_to_minor
@@ -73,7 +73,7 @@ async def delete_expense(
 ) -> None:
     expense = await session.get(Expense, expense_id)
     if expense is None:
-        raise LookupError("Расход не найден")
+        raise RecordNotFound("Расход не найден")
     write_audit(session, actor, "delete", "Expense", str(expense.id), expense.title)
     await session.delete(expense)
     await session.commit()
