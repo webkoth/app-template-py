@@ -63,8 +63,16 @@ const privateRoute = createRoute({
 // собирается, а `to="/выдуманное"` проходит. Замерено: с `path: string`
 // tsc падает на SiteNav, с обобщённым — ноль ошибок, а зонд на
 // несуществующий путь падает.
-const page = <TPath extends string>(path: TPath, component: () => JSX.Element) =>
-  createRoute({ getParentRoute: () => privateRoute, path, component })
+// `JSX.Element | null`, а не просто `JSX.Element`: currentUserQuery по типу
+// отдаёт `CurrentUser | null`, и страница закрытой части сужает его
+// охранником `if (!user) return null`. Ветка недостижима — сюда пускает
+// beforeLoad, который без сессии уводит на /login, — но компилятор её
+// требует, и без этого допущения ни одна такая страница в помощник не
+// проходит.
+const page = <TPath extends string>(
+  path: TPath,
+  component: () => JSX.Element | null
+) => createRoute({ getParentRoute: () => privateRoute, path, component })
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
