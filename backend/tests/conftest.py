@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.config import settings
@@ -41,7 +42,21 @@ async def _schema() -> AsyncIterator[None]:
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        # Схема сбрасывается целиком, а не через drop_all. Две причины.
+        #
+        # Первая: drop_all удаляет только то, что попало в метаданные через
+        # цепочку импортов обвязки. Таблица, чей модуль сюда не
+        # импортируется, переживает прогон — и начинает удаляться позже,
+        # когда её импорт где-нибудь появится. Поведение меняется молча.
+        #
+        # Вторая важнее: эту же базу использует Playwright, а он накатывает
+        # схему миграциями. drop_all оставлял бы alembic_version с отметкой
+        # «накатано», и следующий `alembic upgrade head` не делал бы
+        # ничего — приложение стартовало бы на пустой базе, все сценарии
+        # падали бы, а причина (чужой прогон pytest) была бы не видна.
+        # Воспроизведено.
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
 
 
 @pytest.fixture
