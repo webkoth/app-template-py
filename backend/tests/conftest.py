@@ -4,7 +4,7 @@
 и порядок тестов ни на что не влияет.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 
 import pytest
@@ -97,6 +97,21 @@ async def session() -> AsyncIterator[AsyncSession]:
         yield db
         await db.close()
         await transaction.rollback()
+
+
+@pytest.fixture
+def new_session() -> Callable[[], AsyncSession]:
+    """Отдельная сессия на отдельном соединении, вне транзакции теста.
+
+    Общая фикстура `session` для проверок одновременности не годится: десять
+    параллельных запросов к одной AsyncSession дают ошибку SQLAlchemy вместо
+    проверки поведения.
+
+    Данные, заведённые `make_user`, такой сессии не видны: они лежат в
+    транзакции, которая не коммитится. Это не изъян, а условие — проверка
+    одновременности работает на несуществующем логине.
+    """
+    return lambda: AsyncSession(bind=test_engine)
 
 
 @pytest.fixture
