@@ -6010,9 +6010,7 @@ AdminDep = Depends(require_role(Role.admin))
 
 
 @router.get("", response_model=list[UserOut])
-async def list_users(
-    session: SessionDep, _: CurrentUser = AdminDep
-) -> list[UserOut]:
+async def list_users(session: SessionDep, _: CurrentUser = AdminDep) -> list[UserOut]:
     return [UserOut.model_validate(u) for u in await service.list_users(session)]
 
 
