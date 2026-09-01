@@ -19,6 +19,16 @@ from app.core.users import User, UserStatus
 from app.domain.roles import Role
 from app.main import app
 
+# Импорт ради регистрации таблиц в Base.metadata — по той же причине, что и
+# в alembic/env.py. Схема тестовой базы создаётся из метаданных, а туда
+# таблица попадает, только если её модуль кто-то импортировал. Без этих
+# строк состав схемы зависит от того, какие роутеры уже подключены к
+# приложению, то есть меняется от задачи к задаче: сейчас в метаданных одна
+# таблица из трёх. Первый же тест фичи упал бы с «relation does not exist»,
+# и причину искали бы в тесте, а не в цепочке импортов.
+from app.core.audit import AuditLog  # noqa: F401  # isort: skip
+from app.features.expenses.models import Expense  # noqa: F401  # isort: skip
+
 # Отдельный движок под отдельную базу. Движок приложения здесь не годится:
 # фикстура ниже создаёт и удаляет схему целиком, а рабочая база после этого
 # осталась бы без таблиц при alembic_version на head — то есть приложение
@@ -31,6 +41,16 @@ if not settings.async_database_url_e2e:
     raise RuntimeError(
         "DATABASE_URL_E2E не задан. Тесты создают и удаляют схему целиком и "
         "поэтому идут только в отдельную базу — смотри .env.example."
+    )
+
+# Отдельная проверка на совпадение адресов. Первая закрывает случай
+# «переменную забыли», эта — «переменную скопировали»: опечатка в .env
+# приводит ровно к тому же, от чего защищает первая, — схема рабочей базы
+# уничтожается прогоном тестов. Воспроизведено.
+if settings.database_url_e2e == settings.database_url:
+    raise RuntimeError(
+        "DATABASE_URL_E2E совпадает с DATABASE_URL. Тесты сбрасывают схему "
+        "целиком, и рабочая база после прогона осталась бы пустой."
     )
 
 test_engine = create_async_engine(settings.async_database_url_e2e, pool_pre_ping=True)
