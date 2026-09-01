@@ -40,19 +40,21 @@ export function SiteNav({ user }: { user: CurrentUser }) {
   })
 
   return (
-    <header className="border-border border-b">
+    <header className="border-b border-border">
       <nav className="mx-auto flex max-w-5xl items-center gap-1 px-4 py-3">
         {LINKS.filter((link) => hasRank(user.role, link.role)).map((link) => (
           <Link
             key={link.to}
             to={link.to}
-            className="text-muted-foreground hover:text-foreground rounded-md px-3 py-1.5 text-sm"
+            className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground"
             activeProps={{ className: "text-foreground font-medium" }}
           >
             {link.label}
           </Link>
         ))}
-        <span className="text-muted-foreground ml-auto text-sm">{user.name}</span>
+        <span className="ml-auto text-sm text-muted-foreground">
+          {user.name}
+        </span>
         <Button
           variant="ghost"
           size="icon"

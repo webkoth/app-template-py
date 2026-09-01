@@ -50,7 +50,7 @@ describe("набор тем", () => {
       for (const mode of MODES) {
         for (const key of RAMP_KEYS) {
           expect(theme[mode][key], `${theme.name}.${mode}.${key}`).toMatch(
-            COLOR_PATTERN,
+            COLOR_PATTERN
           )
         }
       }
@@ -65,9 +65,10 @@ describe("набор тем", () => {
   it("общие цвета заданы во всех режимах", () => {
     for (const mode of MODES) {
       for (const key of SHARED_COLOR_KEYS) {
-        expect(SHARED_COLORS[mode][key], `SHARED_COLORS.${mode}.${key}`).toMatch(
-          COLOR_PATTERN,
-        )
+        expect(
+          SHARED_COLORS[mode][key],
+          `SHARED_COLORS.${mode}.${key}`
+        ).toMatch(COLOR_PATTERN)
       }
     }
   })

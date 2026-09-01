@@ -69,8 +69,10 @@ const privateRoute = createRoute({
 // beforeLoad, который без сессии уводит на /login, — но компилятор её
 // требует, и без этого допущения ни одна такая страница в помощник не
 // проходит.
-const page = <TPath extends string>(path: TPath, component: () => JSX.Element | null) =>
-  createRoute({ getParentRoute: () => privateRoute, path, component })
+const page = <TPath extends string>(
+  path: TPath,
+  component: () => JSX.Element | null
+) => createRoute({ getParentRoute: () => privateRoute, path, component })
 
 const routeTree = rootRoute.addChildren([
   loginRoute,

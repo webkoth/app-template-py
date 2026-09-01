@@ -128,7 +128,7 @@ const SENTINEL: Theme = {
  */
 function expectedDeclarations(
   ramp: Ramp,
-  shared: SharedColors,
+  shared: SharedColors
 ): Record<string, string> {
   return {
     "--background": ramp.background,
@@ -231,6 +231,8 @@ describe("buildThemeCss", () => {
   // светлой, и заметить это можно было бы только глазами на контуре.
   it("отображает тёмный режим эталона и не путает его со светлым", () => {
     const actual = parseDeclarations(block(buildThemeCss(SENTINEL), ".dark"))
-    expect(actual).toEqual(expectedDeclarations(SENTINEL.dark, SHARED_COLORS.dark))
+    expect(actual).toEqual(
+      expectedDeclarations(SENTINEL.dark, SHARED_COLORS.dark)
+    )
   })
 })

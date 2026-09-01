@@ -41,9 +41,9 @@ export function AuditPage() {
   return (
     <PageMain>
       <h1 className="text-3xl font-semibold">Журнал</h1>
-      <p className="text-muted-foreground mt-2 max-w-2xl text-sm">
-        Каждая мутация данных пишется сюда той же транзакцией, что и само изменение.
-        Показаны последние двести записей.
+      <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+        Каждая мутация данных пишется сюда той же транзакцией, что и само
+        изменение. Показаны последние двести записей.
       </p>
 
       {entries.isError ? (
@@ -64,7 +64,7 @@ export function AuditPage() {
               <TableRow>
                 <TableCell
                   colSpan={5}
-                  className="text-muted-foreground py-8 text-center"
+                  className="py-8 text-center text-muted-foreground"
                 >
                   Записей пока нет — в журнал попадают только изменения данных.
                 </TableCell>
@@ -72,7 +72,7 @@ export function AuditPage() {
             )}
             {entries.data?.map((entry) => (
               <TableRow key={entry.id}>
-                <TableCell className="text-muted-foreground whitespace-nowrap">
+                <TableCell className="whitespace-nowrap text-muted-foreground">
                   {formatDateTime(entry.ts)}
                 </TableCell>
                 <TableCell className="font-medium">{entry.actor}</TableCell>
@@ -81,8 +81,12 @@ export function AuditPage() {
                     {ACTION_LABEL[entry.action] ?? entry.action}
                   </Badge>
                 </TableCell>
-                <TableCell>{ENTITY_LABEL[entry.entity] ?? entry.entity}</TableCell>
-                <TableCell className="text-muted-foreground">{entry.detail}</TableCell>
+                <TableCell>
+                  {ENTITY_LABEL[entry.entity] ?? entry.entity}
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {entry.detail}
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>

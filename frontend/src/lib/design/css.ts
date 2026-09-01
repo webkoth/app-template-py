@@ -9,7 +9,12 @@
  * у неё нет.
  */
 
-import { SHARED_COLORS, type Ramp, type SharedColors, type Theme } from "./themes"
+import {
+  SHARED_COLORS,
+  type Ramp,
+  type SharedColors,
+  type Theme,
+} from "./themes"
 
 const INDENT = "    "
 

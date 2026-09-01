@@ -40,7 +40,13 @@ import {
 import { currentUserQuery, hasRank } from "@/lib/auth"
 import { formatDate, formatMoney } from "@/lib/format"
 
-const CATEGORIES = ["Аренда", "Софт", "Оборудование", "Услуги", "Прочее"] as const
+const CATEGORIES = [
+  "Аренда",
+  "Софт",
+  "Оборудование",
+  "Услуги",
+  "Прочее",
+] as const
 
 const schema = z.object({
   date: z.string().min(1, "Укажи дату"),
@@ -76,7 +82,10 @@ export function ExpensesPage() {
     queryFn: async () => unwrap(await api.GET("/api/expenses/summary")),
   })
 
-  const totalMinor = (summary.data ?? []).reduce((sum, c) => sum + c.total_minor, 0)
+  const totalMinor = (summary.data ?? []).reduce(
+    (sum, c) => sum + c.total_minor,
+    0
+  )
 
   const form = useForm<Values>({
     resolver: zodResolver(schema),
@@ -108,7 +117,7 @@ export function ExpensesPage() {
       unwrap(
         await api.DELETE("/api/expenses/{expense_id}", {
           params: { path: { expense_id: id } },
-        }),
+        })
       )
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["expenses"] }),
@@ -139,7 +148,10 @@ export function ExpensesPage() {
                   к прогону, а по подписи «Всего» пришлось бы ходить к
                   соседнему узлу через локатор-родитель — такой селектор
                   ломается от любой правки вёрстки карточки. */}
-              <CardTitle className="text-lg tabular-nums" data-testid="expenses-total">
+              <CardTitle
+                className="text-lg tabular-nums"
+                data-testid="expenses-total"
+              >
                 {/* Пока сводка не пришла — прочерк, а не 0,00 ₽. Ноль здесь
                     неотличим от настоящего нуля: на медленной сети карточка
                     показывала бы верную по форме, но неверную по сути
@@ -186,7 +198,7 @@ export function ExpensesPage() {
                 <Label htmlFor="date">Дата</Label>
                 <Input id="date" type="date" {...form.register("date")} />
                 {form.formState.errors.date && (
-                  <p className="text-destructive text-sm">
+                  <p className="text-sm text-destructive">
                     {form.formState.errors.date.message}
                   </p>
                 )}
@@ -195,7 +207,7 @@ export function ExpensesPage() {
                 <Label htmlFor="title">Назначение</Label>
                 <Input id="title" {...form.register("title")} />
                 {form.formState.errors.title && (
-                  <p className="text-destructive text-sm">
+                  <p className="text-sm text-destructive">
                     {form.formState.errors.title.message}
                   </p>
                 )}
@@ -225,21 +237,25 @@ export function ExpensesPage() {
                   </SelectContent>
                 </Select>
                 {form.formState.errors.category && (
-                  <p className="text-destructive text-sm">
+                  <p className="text-sm text-destructive">
                     {form.formState.errors.category.message}
                   </p>
                 )}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="amount">Сумма</Label>
-                <Input id="amount" inputMode="decimal" {...form.register("amount")} />
+                <Input
+                  id="amount"
+                  inputMode="decimal"
+                  {...form.register("amount")}
+                />
                 {form.formState.errors.amount && (
-                  <p className="text-destructive text-sm">
+                  <p className="text-sm text-destructive">
                     {form.formState.errors.amount.message}
                   </p>
                 )}
               </div>
-              <div className="sm:col-span-4 space-y-3">
+              <div className="space-y-3 sm:col-span-4">
                 {form.formState.errors.root && (
                   <Alert variant="destructive">
                     <AlertDescription>
@@ -290,7 +306,7 @@ export function ExpensesPage() {
               <TableRow>
                 <TableCell
                   colSpan={canWrite ? 5 : 4}
-                  className="text-muted-foreground py-8 text-center"
+                  className="py-8 text-center text-muted-foreground"
                 >
                   {canWrite
                     ? "Расходов пока нет. Добавь первый в форме выше."

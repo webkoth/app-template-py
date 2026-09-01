@@ -71,9 +71,13 @@ export function LoginPage() {
           >
             <div className="space-y-2">
               <Label htmlFor="login">Логин</Label>
-              <Input id="login" autoComplete="username" {...form.register("login")} />
+              <Input
+                id="login"
+                autoComplete="username"
+                {...form.register("login")}
+              />
               {form.formState.errors.login && (
-                <p className="text-destructive text-sm">
+                <p className="text-sm text-destructive">
                   {form.formState.errors.login.message}
                 </p>
               )}
@@ -87,7 +91,7 @@ export function LoginPage() {
                 {...form.register("password")}
               />
               {form.formState.errors.password && (
-                <p className="text-destructive text-sm">
+                <p className="text-sm text-destructive">
                   {form.formState.errors.password.message}
                 </p>
               )}
@@ -99,7 +103,11 @@ export function LoginPage() {
                 </AlertDescription>
               </Alert>
             )}
-            <Button type="submit" className="w-full" disabled={submit.isPending}>
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={submit.isPending}
+            >
               {submit.isPending ? "Проверяю…" : "Войти"}
             </Button>
           </form>

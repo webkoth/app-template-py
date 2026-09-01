@@ -39,7 +39,9 @@ describe("replaceThemeBlock", () => {
   })
 
   it("без маркеров бросает понятную ошибку, а не портит файл", () => {
-    expect(() => replaceThemeBlock("@import 'tailwindcss';", THEME)).toThrow(/маркер/i)
+    expect(() => replaceThemeBlock("@import 'tailwindcss';", THEME)).toThrow(
+      /маркер/i
+    )
   })
 
   // Мутация: убрать проверку `end < start` — все четыре теста выше

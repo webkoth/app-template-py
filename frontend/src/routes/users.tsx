@@ -68,7 +68,8 @@ export function UsersPage() {
     defaultValues: { login: "", name: "", role: "viewer", password: "" },
   })
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["users"] })
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["users"] })
 
   const create = useMutation({
     mutationFn: async (values: Values) => {
@@ -98,7 +99,7 @@ export function UsersPage() {
         await api.PATCH("/api/users/{user_id}", {
           params: { path: { user_id: input.id } },
           body: { role: input.role ?? null, status: input.status ?? null },
-        }),
+        })
       )
     },
     onSuccess: invalidate,
@@ -116,9 +117,9 @@ export function UsersPage() {
   return (
     <PageMain>
       <h1 className="text-3xl font-semibold">Люди</h1>
-      <p className="text-muted-foreground mt-2 max-w-2xl text-sm">
-        Учётные записи не удаляются: удалённый автор записи в журнале превратил бы
-        историю в набор осиротевших строк. Вместо удаления — отключение: вход
+      <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+        Учётные записи не удаляются: удалённый автор записи в журнале превратил
+        бы историю в набор осиротевших строк. Вместо удаления — отключение: вход
         закрывается, уже выданные сессии отзываются.
       </p>
 
@@ -140,7 +141,7 @@ export function UsersPage() {
                 <Label htmlFor="login">Логин</Label>
                 <Input id="login" {...form.register("login")} />
                 {form.formState.errors.login && (
-                  <p className="text-destructive text-sm">
+                  <p className="text-sm text-destructive">
                     {form.formState.errors.login.message}
                   </p>
                 )}
@@ -149,7 +150,7 @@ export function UsersPage() {
                 <Label htmlFor="name">Имя</Label>
                 <Input id="name" {...form.register("name")} />
                 {form.formState.errors.name && (
-                  <p className="text-destructive text-sm">
+                  <p className="text-sm text-destructive">
                     {form.formState.errors.name.message}
                   </p>
                 )}
@@ -164,7 +165,9 @@ export function UsersPage() {
                   // закрытая кнопка показывала английское значение из базы.
                   items={ROLE_LABEL}
                   value={form.watch("role")}
-                  onValueChange={(v) => form.setValue("role", v as Values["role"])}
+                  onValueChange={(v) =>
+                    form.setValue("role", v as Values["role"])
+                  }
                 >
                   <SelectTrigger id="role">
                     <SelectValue />
@@ -180,21 +183,25 @@ export function UsersPage() {
                   </SelectContent>
                 </Select>
                 {form.formState.errors.role && (
-                  <p className="text-destructive text-sm">
+                  <p className="text-sm text-destructive">
                     {form.formState.errors.role.message}
                   </p>
                 )}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="password">Пароль</Label>
-                <Input id="password" type="password" {...form.register("password")} />
+                <Input
+                  id="password"
+                  type="password"
+                  {...form.register("password")}
+                />
                 {form.formState.errors.password && (
-                  <p className="text-destructive text-sm">
+                  <p className="text-sm text-destructive">
                     {form.formState.errors.password.message}
                   </p>
                 )}
               </div>
-              <div className="sm:col-span-4 space-y-3">
+              <div className="space-y-3 sm:col-span-4">
                 {form.formState.errors.root && (
                   <Alert variant="destructive">
                     <AlertDescription>
@@ -241,7 +248,7 @@ export function UsersPage() {
               <TableRow>
                 <TableCell
                   colSpan={5}
-                  className="text-muted-foreground py-8 text-center"
+                  className="py-8 text-center text-muted-foreground"
                 >
                   Учётных записей пока нет.
                 </TableCell>
@@ -292,7 +299,9 @@ export function UsersPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => update.mutate({ id: user.id, status: "disabled" })}
+                      onClick={() =>
+                        update.mutate({ id: user.id, status: "disabled" })
+                      }
                     >
                       Отключить
                     </Button>
@@ -302,7 +311,9 @@ export function UsersPage() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => update.mutate({ id: user.id, status: "active" })}
+                        onClick={() =>
+                          update.mutate({ id: user.id, status: "active" })
+                        }
                       >
                         Включить
                       </Button>
