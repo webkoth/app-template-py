@@ -5556,8 +5556,11 @@ git commit -m "feat: служебные маршруты health, build-info и �
 Create `backend/tests/api/test_users.py`:
 
 ```python
+import uuid
+from datetime import UTC, datetime
+
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from app.core.audit import AuditLog
 from app.core.users import User, UserStatus
@@ -5634,15 +5637,31 @@ async def test_user_out_carries_status_and_last_login(client, login_as):
     assert "last_login_at" in row
 
 
-async def test_list_is_ordered_by_creation(client, session, login_as, make_user):
-    # Порядок списка не закреплял ничто. Второй ключ — id: created_at
-    # ставится в коде, и две записи одной миллисекунды иначе меняются
-    # местами от запроса к запросу.
+async def test_list_is_ordered_by_creation(client, session, login_as):
+    # Записи заводятся с ОДИНАКОВЫМ created_at и с идентификаторами, идущими
+    # против порядка вставки. Иначе проверка бесполезна: created_at ставится
+    # с микросекундами, совпадений при обычном заведении не бывает, а
+    # PostgreSQL и без сортировки отдаёт строки в порядке вставки — снятие
+    # order_by целиком проходило молча. Здесь же расходятся все три порядка,
+    # и сортировка обязана дать свой.
+    same = datetime(2026, 1, 1, tzinfo=UTC)
     await login_as(role=Role.admin, login="boss")
-    await make_user(login="первый")
-    await make_user(login="второй")
+    for login, number in [("вторая", 2), ("первая", 1)]:
+        session.add(
+            User(
+                id=uuid.UUID(int=number),
+                login=login,
+                name=login,
+                role=Role.viewer,
+                created_at=same,
+            )
+        )
+    await session.commit()
+
     logins = [u["login"] for u in (await client.get("/api/users")).json()]
-    assert logins == ["boss", "первый", "второй"]
+    # boss заведён позже по времени, поэтому идёт последним; две другие
+    # различаются только идентификатором — вторым ключом сортировки.
+    assert logins == ["первая", "вторая", "boss"]
 
 
 async def test_create_writes_audit_in_same_transaction(client, session, login_as):
@@ -5847,6 +5866,35 @@ async def test_counting_the_remaining_admins(session, make_user):
     # Не-администратор тоже.
     await make_user(login="четвёртый", role=Role.editor)
     assert await service.active_admins_besides(session, boss.id) == 1
+
+
+async def test_the_admin_count_asks_for_a_lock(session, make_user):
+    # Счёт верен и без блокировки — она нужна не ради числа, а ради очереди:
+    # два встречных запроса обязаны встать друг за другом, иначе оба увидят
+    # «второй администратор есть» и оба его снимут. Мутация «убрать
+    # with_for_update» не роняет ничего, потому что на одном запросе разницы
+    # нет, а завести в тесте настоящие параллельные транзакции с
+    # закоммиченными строками дороже, чем то стоит.
+    #
+    # Поэтому проверяется механизм: блокировка ЗАПРОШЕНА. Проверка слабее
+    # поведенческой и честно это признаёт — но она отличает код с
+    # блокировкой от кода без неё, а именно это и теряется молча.
+    from app.features.users import service
+
+    seen: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001, ANN202
+        seen.append(statement)
+
+    boss = await make_user(login="boss", role=Role.admin)
+    engine = session.get_bind().engine
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        await service.active_admins_besides(session, boss.id)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+    assert any("FOR UPDATE" in statement for statement in seen), seen
 
 
 async def test_internal_failure_is_not_reported_as_missing(
@@ -6081,7 +6129,11 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def no_control_characters(value: str) -> str:
-    """Отвергает управляющие символы. Дороже всего здесь NUL.
+    r"""Отвергает управляющие символы. Дороже всего здесь NUL.
+
+    Строка документации сырая (r"""), иначе `\x1b` ниже — не текст, а
+    настоящий ESC: `help()` этого модуля красил бы вывод в терминале ровно
+    тем способом, о котором предупреждает.
 
     PostgreSQL текст с NUL не принимает вовсе, и без этой проверки он
     доходит до вставки: asyncpg бросает CharacterNotInRepertoireError, это
@@ -6444,7 +6496,7 @@ app.include_router(users_router, prefix="/api")
 - [ ] **Шаг 8: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_users.py -v`
-Expected: PASS, 31 passed
+Expected: PASS, 32 passed
 
 - [ ] **Шаг 9: Коммит**
 
@@ -6632,6 +6684,25 @@ async def test_amount_over_int4_rejected_with_readable_message(client, login_as)
     # Без этой проверки сумма прошла бы разбор и упала в базе ошибкой
     # драйвера, которую специалисту читать нечем.
     assert "предельной" in response.json()["error"]
+
+
+async def test_extra_field_is_rejected(client, login_as):
+    # Зеркало запрета у пользователей. Лишнее поле — ошибка, а не мусор,
+    # который молча выбрасывают: отправитель уверен, что попросил о нём.
+    await login_as(role=Role.editor, login="ivan")
+    response = await client.post("/api/expenses", json={**VALID, "amount_minor": 1})
+    assert response.status_code == 400
+
+
+async def test_control_characters_in_title_rejected(client, login_as):
+    # Тот же общий тип, что у имени пользователя, но проверяется отдельно:
+    # у расхода он свой, и подмена типа на голую строку прошла бы молча.
+    await login_as(role=Role.editor, login="ivan")
+    response = await client.post(
+        "/api/expenses", json={**VALID, "title": "Подписка\x00на редактор"}
+    )
+    assert response.status_code == 400
+    assert response.json()["field"] == "title"
 
 
 async def test_blank_title_rejected(client, login_as):
@@ -6906,7 +6977,7 @@ app.include_router(expenses_router, prefix="/api")
 - [ ] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_expenses.py -v`
-Expected: PASS, 21 passed
+Expected: PASS, 23 passed
 
 - [ ] **Шаг 8: Коммит**
 
