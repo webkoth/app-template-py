@@ -4452,7 +4452,9 @@ async def build_info() -> BuildInfo:
     if not marker.exists():
         return BuildInfo(commit="dev", built_at="")
     data = json.loads(marker.read_text(encoding="utf-8"))
-    return BuildInfo(commit=data.get("commit", "dev"), built_at=data.get("built_at", ""))
+    return BuildInfo(
+        commit=data.get("commit", "dev"), built_at=data.get("built_at", "")
+    )
 
 
 @router.get("/meta/docs/{name}", response_model=Document)
@@ -4634,10 +4636,34 @@ async def test_cannot_disable_self(client, login_as):
     assert response.status_code == 400
 
 
+async def test_cannot_demote_self(client, session, login_as):
+    # Вторая дверь в ту же комнату. Единственный администратор, понизивший
+    # себя до editor, запирает контур ровно так же, как отключивший, — а
+    # проверка статуса эту дорогу не перекрывает.
+    me = await login_as(role=Role.admin, login="boss")
+    response = await client.patch(f"/api/users/{me.id}", json={"role": "viewer"})
+    assert response.status_code == 400
+    assert response.json()["field"] == "role"
+    await session.refresh(me)
+    assert me.role is Role.admin
+
+
+async def test_admin_can_promote_someone_else(client, session, login_as, make_user):
+    # Обратная сторона запрета: он про себя, а не про роль вообще. Без этой
+    # проверки правило «нельзя понижать администратора» прошло бы незамеченным.
+    await login_as(role=Role.admin, login="boss")
+    other = await make_user(login="ivan", role=Role.admin)
+    response = await client.patch(f"/api/users/{other.id}", json={"role": "viewer"})
+    assert response.status_code == 200
+    await session.refresh(other)
+    assert other.role is Role.viewer
+
+
 async def test_unknown_user_is_404(client, login_as):
     await login_as(role=Role.admin)
     missing = "01a05000-0000-7000-8000-000000000000"
-    assert (await client.patch(f"/api/users/{missing}", json={"role": "admin"})).status_code == 404
+    response = await client.patch(f"/api/users/{missing}", json={"role": "admin"})
+    assert response.status_code == 404
 ```
 
 - [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
@@ -4648,6 +4674,7 @@ Expected: FAIL — маршрутов `/api/users` ещё нет.
 - [ ] **Шаг 3: Написать `backend/app/features/users/schemas.py`**
 
 ```python
+import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -4663,7 +4690,11 @@ MIN_PASSWORD_LENGTH = 8
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
+    # uuid.UUID, а не str. Pydantic строку из UUID сам не делает — проверено:
+    # model_validate падает с «Input should be a valid string». В JSON поле
+    # всё равно уезжает строкой, а в схеме OpenAPI получает format: uuid, то
+    # есть клиент видит тот же string.
+    id: uuid.UUID
     login: str
     name: str
     role: Role
@@ -4712,6 +4743,7 @@ from app.core.audit import write_audit
 from app.core.errors import RuleViolation
 from app.core.security import hash_password
 from app.core.users import User, UserStatus
+from app.domain.roles import Role
 from app.features.users.schemas import CreateUserRequest, UpdateUserRequest
 
 
@@ -4763,6 +4795,16 @@ async def update_user(
 
     changes: list[str] = []
     if payload.role is not None and payload.role is not user.role:
+        if str(user.id) == actor_id and payload.role is not Role.admin:
+            # Тот же запрет, что и на отключение себя, и по той же причине:
+            # единственный администратор, понизивший себя до editor, запирает
+            # контур — вернуть права будет некому. Отдельным правилом, а не
+            # частью проверки статуса: понижение проходит мимо неё целиком, и
+            # без этой ветки запрет выглядел бы поставленным, оставляя дверь
+            # рядом открытой.
+            raise RuleViolation(
+                "Нельзя снять права администратора с самого себя", field="role"
+            )
         user.role = payload.role
         changes.append(f"роль → {payload.role.value}")
 
@@ -4781,7 +4823,9 @@ async def update_user(
     if not changes:
         raise RuleViolation("Менять нечего")
 
-    write_audit(session, actor_login, "update", "User", str(user.id), ", ".join(changes))
+    write_audit(
+        session, actor_login, "update", "User", str(user.id), ", ".join(changes)
+    )
     await session.commit()
     return user
 ```
@@ -4835,9 +4879,10 @@ async def update_user(
     return UserOut.model_validate(user)
 ```
 
-`UserOut.model_validate` требует, чтобы `id` был строкой, а в модели он
-`uuid.UUID`. Pydantic приводит его сам благодаря `from_attributes=True` и
-аннотации `id: str`.
+`from_attributes=True` разрешает собирать схему прямо из строки
+SQLAlchemy. Приведения типов это не даёт: `id` объявлен `uuid.UUID` ровно
+потому, что при `id: str` каждый вызов `model_validate` падал бы с «Input
+should be a valid string» — проверено на pydantic 2.13.
 
 - [ ] **Шаг 6: Подключить роутер в `backend/app/main.py`**
 
@@ -4850,7 +4895,7 @@ app.include_router(users_router, prefix="/api")
 - [ ] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_users.py -v`
-Expected: PASS, 11 passed
+Expected: PASS, 13 passed
 
 - [ ] **Шаг 8: Коммит**
 
@@ -4998,6 +5043,7 @@ Expected: FAIL — маршрутов `/api/expenses` ещё нет.
 - [ ] **Шаг 3: Написать `backend/app/features/expenses/schemas.py`**
 
 ```python
+import uuid
 from datetime import datetime
 from typing import Literal
 
@@ -5016,7 +5062,11 @@ Category = Literal["Аренда", "Софт", "Оборудование", "Ус
 class ExpenseOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
+    # uuid.UUID, а не str. Pydantic строку из UUID сам не делает — проверено:
+    # model_validate падает с «Input should be a valid string». В JSON поле
+    # всё равно уезжает строкой, а в схеме OpenAPI получает format: uuid, то
+    # есть клиент видит тот же string.
+    id: uuid.UUID
     date: datetime
     title: str
     # Сырые копейки: показ форматирует клиент, сортировка и графики требуют
@@ -5263,6 +5313,7 @@ async def test_newest_first(client, login_as):
 - [ ] **Шаг 2: Написать `backend/app/features/audit/router.py`**
 
 ```python
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
@@ -5279,7 +5330,11 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 class AuditEntryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
+    # uuid.UUID, а не str. Pydantic строку из UUID сам не делает — проверено:
+    # model_validate падает с «Input should be a valid string». В JSON поле
+    # всё равно уезжает строкой, а в схеме OpenAPI получает format: uuid, то
+    # есть клиент видит тот же string.
+    id: uuid.UUID
     ts: datetime
     actor: str
     action: str
