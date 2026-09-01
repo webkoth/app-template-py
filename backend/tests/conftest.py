@@ -9,21 +9,38 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.core.db import Base, engine, get_session
+from app.core.config import settings
+from app.core.db import Base, get_session
 from app.core.security import hash_password
 from app.core.users import User, UserStatus
 from app.domain.roles import Role
 from app.main import app
 
+# Отдельный движок под отдельную базу. Движок приложения здесь не годится:
+# фикстура ниже создаёт и удаляет схему целиком, а рабочая база после этого
+# осталась бы без таблиц при alembic_version на head — то есть приложение
+# перестало бы стартовать, а миграции считали бы, что накатывать нечего.
+# Проверено: именно это и произошло при первом прогоне.
+#
+# Отказ громкий и намеренный. Молчаливый откат на рабочую базу означал бы,
+# что забытая переменная окружения стоит человеку схемы.
+if not settings.async_database_url_e2e:
+    raise RuntimeError(
+        "DATABASE_URL_E2E не задан. Тесты создают и удаляют схему целиком и "
+        "поэтому идут только в отдельную базу — смотри .env.example."
+    )
+
+test_engine = create_async_engine(settings.async_database_url_e2e, pool_pre_ping=True)
+
 
 @pytest.fixture(scope="session", autouse=True)
 async def _schema() -> AsyncIterator[None]:
-    async with engine.begin() as conn:
+    async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
-    async with engine.begin() as conn:
+    async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
 
 
@@ -35,7 +52,7 @@ async def session() -> AsyncIterator[AsyncSession]:
     commit() по-настоящему: коммитится вложенная точка сохранения, а внешняя
     транзакция остаётся открытой и откатывается в конце теста.
     """
-    async with engine.connect() as connection:
+    async with test_engine.connect() as connection:
         transaction = await connection.begin()
         db = AsyncSession(
             bind=connection,

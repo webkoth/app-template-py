@@ -95,8 +95,21 @@ class Settings(BaseSettings):
         и psql. Драйвер подставляется здесь, чтобы общий app-provision,
         которым пользуется и TS-шаблон, остался нетронутым.
         """
-        _, rest = self.database_url.split("://", 1)
-        return f"postgresql+asyncpg://{rest}"
+        return _with_async_driver(self.database_url)
+
+    @property
+    def async_database_url_e2e(self) -> str | None:
+        """То же для отдельной базы под тесты.
+
+        Тесты создают и удаляют схему целиком, поэтому идти в рабочую базу
+        им нельзя ни при каких условиях: после прогона там не осталось бы
+        таблиц, а alembic_version продолжал бы показывать head — то есть
+        приложение перестало бы стартовать, а миграции считали бы, что
+        накатывать нечего.
+        """
+        if not self.database_url_e2e:
+            return None
+        return _with_async_driver(self.database_url_e2e)
 
 
 def describe_validation_error(error: ValidationError) -> str:
@@ -132,6 +145,12 @@ def load_settings() -> Settings:
         return Settings()  # type: ignore[call-arg]
     except ValidationError as error:
         raise RuntimeError(describe_validation_error(error)) from None
+
+
+def _with_async_driver(url: str) -> str:
+    """Подставляет асинхронный драйвер, сохраняя остальную часть адреса."""
+    _, rest = url.split("://", 1)
+    return f"postgresql+asyncpg://{rest}"
 
 
 settings = load_settings()
