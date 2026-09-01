@@ -6993,6 +6993,7 @@ git commit -m "feat: образцовая фича расходов"
 ### Задача 22: Журнал аудита и сборка приложения
 
 **Files:**
+- Create: `backend/app/features/audit/service.py`
 - Create: `backend/app/features/audit/router.py`
 - Create: `backend/app/core/static.py`
 - Modify: `backend/app/main.py`
@@ -7100,7 +7101,35 @@ def test_real_api_route_still_answers(tmp_path, monkeypatch):
     assert response.json() == {"status": "ok"}
 ```
 
-- [ ] **Шаг 2: Написать `backend/app/features/audit/router.py`**
+- [ ] **Шаг 2: Написать `backend/app/features/audit/service.py`**
+
+```python
+"""Чтение журнала. Записывает в него core/audit.py, читает эта фича."""
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.audit import AuditLog
+
+# Верхняя граница жёсткая: журнал растёт неограниченно, и запрос без предела
+# однажды выгрузит в память всю историю контура.
+MAX_LIMIT = 1000
+DEFAULT_LIMIT = 200
+
+
+async def list_entries(session: AsyncSession, limit: int) -> list[AuditLog]:
+    result = await session.execute(
+        select(AuditLog).order_by(AuditLog.ts.desc()).limit(limit)
+    )
+    return list(result.scalars().all())
+```
+
+Сервис здесь ради одного запроса — и это не лишний слой. Шаблон учит
+раскладке «роутер — сервис — модели», и фича, которая берёт модель прямо в
+роутере, учит обратному первым же примером. Контракт границ ниже это и
+закрепляет: у остальных фич такой сервис есть, у этой не было.
+
+- [ ] **Шаг 3: Написать `backend/app/features/audit/router.py`**
 
 ```python
 import uuid
@@ -7108,11 +7137,10 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
 
-from app.core.audit import AuditLog
 from app.core.deps import CurrentUser, SessionDep, require_role
 from app.domain.roles import Role
+from app.features.audit import service
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -7136,18 +7164,18 @@ class AuditEntryOut(BaseModel):
 @router.get("", response_model=list[AuditEntryOut])
 async def list_entries(
     session: SessionDep,
-    # Верхняя граница жёсткая: журнал растёт неограниченно, и запрос без
-    # предела однажды выгрузит в память всю историю контура.
-    limit: int = Query(default=200, ge=1, le=1000),
+    limit: int = Query(
+        default=service.DEFAULT_LIMIT, ge=1, le=service.MAX_LIMIT
+    ),
     _: CurrentUser = Depends(require_role(Role.admin)),
 ) -> list[AuditEntryOut]:
-    result = await session.execute(
-        select(AuditLog).order_by(AuditLog.ts.desc()).limit(limit)
-    )
-    return [AuditEntryOut.model_validate(e) for e in result.scalars().all()]
+    return [
+        AuditEntryOut.model_validate(e)
+        for e in await service.list_entries(session, limit)
+    ]
 ```
 
-- [ ] **Шаг 3: Написать `backend/app/core/static.py`**
+- [ ] **Шаг 4: Написать `backend/app/core/static.py`**
 
 ```python
 """Раздача собранного фронтенда.
@@ -7186,7 +7214,7 @@ def mount_frontend(app: FastAPI) -> None:
         return FileResponse(DIST / "index.html")
 ```
 
-- [ ] **Шаг 4: Дописать `backend/app/main.py`**
+- [ ] **Шаг 5: Дописать `backend/app/main.py`**
 
 Приложение собиралось по частям начиная с задачи 17: сюда уже подключены
 маршруты meta, auth, users и expenses. Осталось добавить журнал и раздачу
@@ -7261,7 +7289,7 @@ for router in (
 # маршрутов API, иначе он поглотит их.
 mount_frontend(app)
 ```
-- [ ] **Шаг 5: Написать `backend/app/openapi.py`**
+- [ ] **Шаг 6: Написать `backend/app/openapi.py`**
 
 ```python
 """Печать схемы OpenAPI. Из неё генерируются типы клиента.
@@ -7277,12 +7305,12 @@ if __name__ == "__main__":
     print(json.dumps(app.openapi(), ensure_ascii=False, indent=2))
 ```
 
-- [ ] **Шаг 6: Прогнать все тесты бэкенда**
+- [ ] **Шаг 7: Прогнать все тесты бэкенда**
 
 Run: `cd backend && uv run pytest -v`
-Expected: PASS — все тесты фаз 1–4 зелёные (около 80).
+Expected: PASS — все тесты фаз 1–4 зелёные.
 
-- [ ] **Шаг 7: Добавить последний контракт границ**
+- [ ] **Шаг 8: Добавить последний контракт границ**
 
 Все `router.py` теперь существуют. Дописать в `backend/.importlinter`:
 
@@ -7293,16 +7321,24 @@ Expected: PASS — все тесты фаз 1–4 зелёные (около 80)
 [importlinter:contract:router-goes-through-service]
 name = router не ходит в модели мимо service
 type = forbidden
+# Только прямые импорты. Без этой строки контракт сломан с рождения и по
+# ложной причине: путь `users.router → users.schemas → core.users` есть и
+# обязан быть — схема ответа берёт оттуда UserStatus и тип логина. Запрет
+# же не про то, кто чей предок в цепочке, а про то, лезет ли роутер в
+# модели САМ, минуя сервис.
+allow_indirect_imports = True
 source_modules =
     app.features.auth.router
     app.features.users.router
     app.features.expenses.router
+    app.features.audit.router
 forbidden_modules =
     app.features.expenses.models
     app.core.users
+    app.core.audit
 ```
 
-- [ ] **Шаг 8: Проверить границы модулей**
+- [ ] **Шаг 9: Проверить границы модулей**
 
 Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
 Expected: `Contracts: 3 kept, 0 broken.`
@@ -7310,7 +7346,7 @@ Expected: `Contracts: 3 kept, 0 broken.`
 Если третий контракт сразу broken — это не повод его ослабить. Значит роутер
 и правда лезет в модели мимо сервиса, и чинить надо роутер.
 
-- [ ] **Шаг 9: Поднять приложение руками**
+- [ ] **Шаг 10: Поднять приложение руками**
 
 ```bash
 cd backend && uv run uvicorn app.main:app --port 8000
@@ -7322,7 +7358,7 @@ curl -s -X POST http://127.0.0.1:8000/api/auth/login \
 
 Expected: `{"status":"ok"}`; вход отвечает 200 и ставит куку `app_session`.
 
-- [ ] **Шаг 10: Коммит**
+- [ ] **Шаг 11: Коммит**
 
 ```bash
 git add backend/app/features/audit/ backend/app/core/static.py \
