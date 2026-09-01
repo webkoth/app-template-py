@@ -4973,10 +4973,26 @@ git commit -m "feat: вход, выход и текущий пользовате
 Create `backend/tests/api/test_meta.py`:
 
 ```python
+import json
+from collections.abc import AsyncIterator
+from typing import get_args
+
 import pytest
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from app.core.db import get_session
 from app.features.meta import router as meta
+from app.main import app
+
+
+def _logged(caplog):
+    """Записи лога от маршрутов meta.
+
+    Именно от них: caplog собирает и чужие — httpx пишет строку на каждый
+    запрос, и проверка «ровно одна запись» считала бы её тоже.
+    """
+    return [record for record in caplog.records if record.name == meta.__name__]
 
 
 async def test_health_is_open_and_touches_db(client):
@@ -4992,6 +5008,10 @@ async def test_health_answers_503_when_database_is_down(client, session, monkeyp
     #
     # Мутация «убрать session.execute» оставляет тест на счастливый путь
     # зелёным: он подтверждает только то, что процесс жив.
+    #
+    # Здесь отказ на УЖЕ УСТАНОВЛЕННОМ соединении — форма, которую ловит и
+    # узкий except SQLAlchemyError. Настоящий отказ базы выглядит иначе, он
+    # проверяется тестом ниже.
     async def broken(*args: object, **kwargs: object) -> None:
         raise OperationalError("SELECT 1", None, Exception("база недоступна"))
 
@@ -5000,17 +5020,133 @@ async def test_health_answers_503_when_database_is_down(client, session, monkeyp
     assert response.status_code == 503
 
 
+async def test_health_answers_503_when_connection_fails(client):
+    # Отказ на этапе ПОДКЛЮЧЕНИЯ — то, как база падает в жизни: СУБД не
+    # запущена, хост недоступен, базу удалили, роли нет. До SQLAlchemy такой
+    # сбой не доходит: замерено — здесь прилетает голый
+    # ConnectionRefusedError (OSError), а не SQLAlchemyError, и с узкой
+    # ловлей маршрут отвечал 500 с трейсбеком в лог на каждый опрос — то
+    # есть ветка 503 срабатывала ровно в том случае, который встречается
+    # реже всего.
+    #
+    # Порт 1 закрыт всегда, поэтому подключение падает сразу и тест не ждёт
+    # таймаута.
+    dead = create_async_engine("postgresql+asyncpg://nobody@127.0.0.1:1/nothing")
+
+    async def _override() -> AsyncIterator[AsyncSession]:
+        async with AsyncSession(bind=dead) as db:
+            yield db
+
+    # Фикстура client чистит dependency_overrides на выходе.
+    app.dependency_overrides[get_session] = _override
+    try:
+        response = await client.get("/api/health")
+    finally:
+        await dead.dispose()
+    assert response.status_code == 503
+
+
 def test_repo_root_points_at_the_repository():
-    # parents[4] — счёт уровней вручную, и он ломается молча: при переезде
-    # файла на уровень глубже все документы начинают отвечать «не найден», а
-    # искать причину будут в списке разрешённых имён.
+    # Счёт уровней вручную ломается молча: при переезде файла на уровень
+    # глубже все документы начинают отвечать «не найден», а искать причину
+    # будут в списке разрешённых имён. Счёт теперь один — в config.py, — и
+    # эта проверка сторожит именно его.
     assert (meta.REPO_ROOT / "backend" / "pyproject.toml").exists()
 
 
-async def test_build_info_is_open(client):
+async def test_build_info_requires_login(client):
+    # Спецификация: /api/health — единственный маршрут без авторизации.
+    # Анонимный build-info отдавал точный задеплоенный коммит; потребителей
+    # у маршрута нет ни одного, так что закрыть его ничего не стоит.
+    response = await client.get("/api/meta/build-info")
+    assert response.status_code == 401
+
+
+async def test_build_info_reads_the_marker_file(
+    client, login_as, monkeypatch, tmp_path
+):
+    # Единственная ветка, работающая на контуре. Локально build-info.json
+    # нет, и без подстановки файла тест всегда шёл веткой «файла нет»:
+    # мутация «заменить всё тело обработчика на BuildInfo(commit="dev",
+    # built_at="")» оставляла прогон зелёным целиком.
+    marker = tmp_path / "build-info.json"
+    marker.write_text(
+        json.dumps({"commit": "abc1234", "built_at": "2026-09-01T10:00:00Z"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(meta, "BUILD_INFO_FILE", marker)
+    await login_as()
     response = await client.get("/api/meta/build-info")
     assert response.status_code == 200
-    assert "commit" in response.json()
+    assert response.json() == {"commit": "abc1234", "built_at": "2026-09-01T10:00:00Z"}
+
+
+async def test_build_info_without_marker_says_dev(
+    client, login_as, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(meta, "BUILD_INFO_FILE", tmp_path / "нет-такого.json")
+    await login_as()
+    response = await client.get("/api/meta/build-info")
+    assert response.status_code == 200
+    assert response.json() == {"commit": "dev", "built_at": ""}
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # Распаковка tar на контуре прервана — кончился диск, оборвалась
+        # связь — и файл обрезан. К build-info идут ИМЕННО тогда, когда
+        # доставка пошла не так, а он в этот момент отвечал 500.
+        '{"commit":"abc12',
+        "",
+        "﻿{}",
+        "null",
+        '["a"]',
+        "42",
+        # Ключ есть, значение null: data.get(key, default) подставляет
+        # умолчание, только когда ключа НЕТ, — в модель уезжал None и давал
+        # 500 от валидации вместо честного «неизвестно».
+        '{"commit": null, "built_at": null}',
+    ],
+)
+async def test_broken_marker_answers_dev_without_traceback(
+    client, login_as, monkeypatch, tmp_path, caplog, content
+):
+    marker = tmp_path / "build-info.json"
+    marker.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(meta, "BUILD_INFO_FILE", marker)
+    await login_as()
+    with caplog.at_level("WARNING", logger=meta.__name__):
+        response = await client.get("/api/meta/build-info")
+    assert response.status_code == 200
+    assert response.json()["commit"] == "dev"
+    # Одна строка, без трейсбека: маршрут опрашивают часто, и двенадцать
+    # тысяч символов трейсбека на запрос топят настоящую ошибку.
+    assert [record.exc_info for record in _logged(caplog)] == [None]
+
+
+async def test_marker_that_is_a_directory_answers_dev(
+    client, login_as, monkeypatch, tmp_path
+):
+    # Каталог вместо файла: read_text даёт IsADirectoryError, то есть 500.
+    (tmp_path / "build-info.json").mkdir()
+    monkeypatch.setattr(meta, "BUILD_INFO_FILE", tmp_path / "build-info.json")
+    await login_as()
+    response = await client.get("/api/meta/build-info")
+    assert response.status_code == 200
+    assert response.json()["commit"] == "dev"
+
+
+def test_document_names_and_paths_do_not_drift():
+    # Два списка, которые ничто не связывало. Мутация: имя, добавленное
+    # ТОЛЬКО в Literal, проходило ruff, mypy и pytest, уезжало в OpenAPI и в
+    # типы клиента как валидное — и давало KeyError с пятисоткой при первом
+    # обращении в бою. Обратный дрейф молчаливее: ключ без имени в Literal
+    # недостижим навсегда, при том что запись в исходнике выглядит сделанной.
+    #
+    # Тест закрывает обе стороны; лишний ключ ловит ещё и mypy — через
+    # аннотацию dict[DocumentName, Path].
+    assert set(get_args(meta.DocumentName)) == set(meta.DOCUMENTS)
 
 
 async def test_docs_requires_login(client):
@@ -5041,6 +5177,39 @@ async def test_known_name_without_file_is_404(client, login_as, monkeypatch, tmp
     await login_as()
     response = await client.get("/api/meta/docs/agents")
     assert response.status_code == 404
+
+
+async def test_directory_instead_of_document_is_404(
+    client, login_as, monkeypatch, tmp_path
+):
+    # exists() истинно и для каталога, и чтение давало IsADirectoryError,
+    # то есть 500 вместо внятного «не найден».
+    directory = tmp_path / "AGENTS.md"
+    directory.mkdir()
+    monkeypatch.setitem(meta.DOCUMENTS, "agents", directory)
+    await login_as()
+    response = await client.get("/api/meta/docs/agents")
+    assert response.status_code == 404
+
+
+async def test_unreadable_document_is_not_404(
+    client, login_as, monkeypatch, tmp_path, caplog
+):
+    # Файл есть, но не в UTF-8. Для шаблона, чей AGENTS.md правят
+    # произвольные команды, файл в CP1251 не экзотика. Ответ явный и с
+    # записью в лог, но НЕ 404: «не найден» отправил бы человека искать
+    # пропавший файл, которого он не терял.
+    document = tmp_path / "AGENTS.md"
+    document.write_bytes("# Правила\n".encode("cp1251"))
+    monkeypatch.setitem(meta.DOCUMENTS, "agents", document)
+    await login_as()
+    with caplog.at_level("WARNING", logger=meta.__name__):
+        response = await client.get("/api/meta/docs/agents")
+    assert response.status_code == 500
+    assert response.json() == {"error": "Документ не удалось прочитать", "field": None}
+    # Одна строка, без трейсбека: HTTPException не доходит до обработчика
+    # Exception, который пишет трейсбек на каждый запрос.
+    assert [record.exc_info for record in _logged(caplog)] == [None]
 
 
 @pytest.mark.parametrize(
@@ -5075,7 +5244,7 @@ async def test_unknown_document_rejected(client, login_as, name):
 
 Run: `cd backend && uv run pytest tests/api/test_meta.py`
 Expected: FAIL — маршрутов `/api/health` и `/api/meta/*` ещё нет: все
-двенадцать проверок падают.
+двадцать шесть проверок падают.
 
 - [ ] **Шаг 3: Написать `backend/app/features/meta/router.py`**
 
@@ -5083,25 +5252,49 @@ Expected: FAIL — маршрутов `/api/health` и `/api/meta/*` ещё не
 """Служебные маршруты: живость, версия сборки, тексты правил для /docs."""
 
 import json
+import logging
 from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.config import REPO_ROOT
 from app.core.deps import CurrentUserDep, SessionDep
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["meta"])
 
-# Корень репозитория: app/features/meta/router.py → четыре уровня вверх.
-REPO_ROOT = Path(__file__).resolve().parents[4]
+# Корень репозитория берётся из конфигурации, а не считается здесь заново.
+# Счёт уровней от файла (parents[N]) верен ровно для одного места в дереве:
+# в config.py их три, в этом файле было бы четыре. Два ручных счёта одного и
+# того же каталога расходятся молча — при переносе app/ под src/ поиск .env
+# и пути документов сломались бы по-разному, и вторую поломку искали бы
+# отдельно. Здесь корень нужен как основание для путей документов и маркера
+# сборки: они лежат вне backend/, куда смотрит рабочий каталог процесса.
+BUILD_INFO_FILE = REPO_ROOT / "build-info.json"
+
+# Значение, которым отвечает версия сборки, когда её негде взять: файла нет
+# (обычная разработка) или он испорчен. Честное «неизвестно», а не выдумка.
+UNKNOWN_COMMIT = "dev"
+
+DocumentName = Literal[
+    "agents", "checklist", "onboarding", "ship", "status", "logs", "rollback"
+]
 
 # Список разрешённых документов задан явно, а имя НЕ превращается в путь.
 # Любая склейка вида REPO_ROOT / name отдала бы .env с секретом подписи по
 # первому же ../ в запросе.
-DOCUMENTS: dict[str, Path] = {
+#
+# Тип ключа — DocumentName, а не str, намеренно: список имён и таблица путей
+# ничем друг с другом не связаны, и разъезжаются они беззвучно. Проверено
+# мутацией: имя, добавленное только в Literal, проходило ruff, mypy и
+# pytest, уезжало в OpenAPI и в типы клиента как валидное, а в бою давало
+# KeyError и пятисотку. С этой аннотацией лишний ключ ловит mypy, лишнее имя
+# в Literal — тест на совпадение множеств.
+DOCUMENTS: dict[DocumentName, Path] = {
     "agents": REPO_ROOT / "AGENTS.md",
     "checklist": REPO_ROOT / "CHECKLIST.md",
     "onboarding": REPO_ROOT / "docs" / "commands" / "onboarding.md",
@@ -5110,10 +5303,6 @@ DOCUMENTS: dict[str, Path] = {
     "logs": REPO_ROOT / "docs" / "commands" / "logs.md",
     "rollback": REPO_ROOT / "docs" / "commands" / "rollback.md",
 }
-
-DocumentName = Literal[
-    "agents", "checklist", "onboarding", "ship", "status", "logs", "rollback"
-]
 
 
 class Health(BaseModel):
@@ -5147,11 +5336,27 @@ async def health(session: SessionDep) -> Health:
     третье: ветку отказа можно проверить тестом только если она отвечает, а
     не выбрасывает.
 
+    Ловится Exception, а не SQLAlchemyError. Узкая ловля закрывала только
+    сбой на УЖЕ УСТАНОВЛЕННОМ соединении — случай, который в жизни
+    встречается реже всего. Отказ на этапе подключения до SQLAlchemy не
+    доходит: замерено — незапущенная СУБД даёт голый ConnectionRefusedError,
+    недоступный хост socket.gaierror, удалённая база и отсутствующая роль —
+    собственные классы asyncpg. Ни один из них не SQLAlchemyError, и все
+    четыре отвечали 500 с трейсбеком в двенадцать тысяч символов на каждый
+    опрос, то есть ровно тем вредом, ради которого ветка 503 и написана.
+    Проверка живости, упавшая по любой причине, обязана сказать «сервис
+    недоступен»: 500 отправляет человека искать ошибку в коде, когда лежит
+    база.
+
+    В лог — одна строка, а не трейсбек: при опросе раз в несколько секунд
+    трейсбек затопил бы лог именно тогда, когда его читают.
+
     Доставка ждёт ровно 200, так что 503 её по-прежнему останавливает.
     """
     try:
         await session.execute(text("SELECT 1"))
-    except SQLAlchemyError as error:
+    except Exception as error:
+        logger.warning("проверка живости: база недоступна (%s)", type(error).__name__)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "База данных недоступна"
         ) from error
@@ -5159,30 +5364,107 @@ async def health(session: SessionDep) -> Health:
 
 
 @router.get("/meta/build-info", response_model=BuildInfo)
-async def build_info() -> BuildInfo:
-    """Версия доставленного кода. Пишется при сборке, читается с диска."""
-    marker = REPO_ROOT / "build-info.json"
-    if not marker.exists():
-        return BuildInfo(commit="dev", built_at="")
-    data = json.loads(marker.read_text(encoding="utf-8"))
-    return BuildInfo(
-        commit=data.get("commit", "dev"), built_at=data.get("built_at", "")
-    )
+async def build_info(user: CurrentUserDep) -> BuildInfo:
+    """Версия доставленного кода. Пишется при сборке, читается с диска.
+
+    Авторизация обязательна: единственный маршрут без неё — /health, так
+    сказано в спецификации. Точный задеплоенный коммит анониму знать незачем.
+
+    Файл пришёл извне процесса, поэтому и разбирается как испорченный.
+    Замерено с настоящим файлом на диске: обрезанный JSON, пустой файл, файл
+    с BOM, `null`, `["a"]`, `{"commit": null}` и каталог вместо файла — все
+    давали 500. К этому маршруту идут ИМЕННО тогда, когда доставка пошла не
+    так (прерванная распаковка tar оставляет обрезанный файл), и ломался он
+    ровно в этот момент. Испорченный файл — не повод для пятисотки: версия
+    сборки неизвестна, так и надо ответить.
+    """
+    try:
+        raw = json.loads(BUILD_INFO_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # Файла нет — это норма разработки, а не происшествие: молча.
+        return BuildInfo(commit=UNKNOWN_COMMIT, built_at="")
+    except (OSError, ValueError) as error:
+        # OSError — каталог вместо файла, права, сбой чтения; ValueError —
+        # и JSONDecodeError, и UnicodeDecodeError. Одна строка, без
+        # трейсбека: к маршруту ходят часто.
+        logger.warning("build-info.json не прочитан: %s", type(error).__name__)
+        return BuildInfo(commit=UNKNOWN_COMMIT, built_at="")
+    commit = _text(_value(raw, "commit"), "")
+    if not commit:
+        # Разобралось, но коммита в этом нет: корнем файла бывает `null`,
+        # список или число, а бывает и объект со значением null у ключа.
+        logger.warning("build-info.json без коммита: %s", type(raw).__name__)
+        return BuildInfo(commit=UNKNOWN_COMMIT, built_at="")
+    return BuildInfo(commit=commit, built_at=_text(_value(raw, "built_at"), ""))
 
 
 @router.get("/meta/docs/{name}", response_model=Document)
 async def document(name: DocumentName, user: CurrentUserDep) -> Document:
-    """Отдаёт текст правил или команды. Читает файлы репозитория с диска."""
+    """Отдаёт текст правил или команды. Читает файлы репозитория с диска.
+
+    is_file(), а не exists(): exists() истинно и для каталога, и чтение
+    такого пути давало IsADirectoryError и пятисотку вместо внятного «не
+    найден». Он же отсекает симлинк на каталог. На симлинк-файл проверка не
+    влияет — замерено, что AGENTS.md, указывающий на файл со строкой
+    APP_AUTH_SECRET, отдавался с кодом 200 вместе с секретом; атакой это не
+    является (симлинк надо самому положить в репозиторий), но лишний довод
+    против exists().
+    """
     path = DOCUMENTS[name]
-    if not path.exists():
+    if not path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Документ не найден")
-    return Document(name=name, content=path.read_text(encoding="utf-8"))
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as error:
+        # Файл есть, но не читается — не 404: «не найден» отправил бы
+        # человека искать пропавший файл, которого он не терял. Частый
+        # случай — не UTF-8: AGENTS.md в шаблоне правят произвольные
+        # команды, и файл в CP1251 не экзотика (UnicodeDecodeError — это
+        # ValueError). Отказ явный и с записью в лог, но одной строкой:
+        # HTTPException не доходит до обработчика Exception, который пишет
+        # трейсбек на каждый запрос.
+        logger.warning("документ %s не прочитан: %s", name, type(error).__name__)
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "Документ не удалось прочитать"
+        ) from error
+    return Document(name=name, content=content)
+
+
+def _value(raw: object, key: str) -> object:
+    """Поле разобранного JSON, если это вообще объект.
+
+    Корнем файла бывает `null`, список или число — тогда полей нет ни
+    одного, и .get() на таком значении падал AttributeError.
+    """
+    return raw.get(key) if isinstance(raw, dict) else None
+
+
+def _text(value: object, default: str) -> str:
+    """Непустая строка или запасное значение.
+
+    Проверка на тип и на пустоту, а не data.get(key, default): умолчание у
+    .get() подставляется, только когда ключа НЕТ. При `{"commit": null}`
+    ключ есть, значение None — и в модель уезжал None, то есть 500 от
+    валидации вместо честного «неизвестно».
+    """
+    return value if isinstance(value, str) and value else default
 ```
 
 `DocumentName` как `Literal` даёт две вещи разом: FastAPI сам отвергает
 неизвестное имя до входа в обработчик, и это же имя попадает в OpenAPI, а
 оттуда — в типы клиента. Опечатка в имени документа на фронтенде станет
 ошибкой `tsc`.
+
+Ключ `DOCUMENTS` типизирован тем же `DocumentName`, а не `str`: без этого
+список имён и таблица путей — два независимых списка, и разъезжаются они
+беззвучно. Имя, добавленное только в `Literal`, проходит ruff, mypy и
+pytest, уезжает в OpenAPI как валидное и даёт `KeyError` при первом
+обращении в бою; ключ, добавленный только в таблицу, недостижим навсегда.
+Аннотация ловит первый случай mypy, тест на совпадение множеств — оба.
+
+`REPO_ROOT` импортируется из `app.core.config`, а не считается здесь заново:
+`parents[N]` верен ровно для одного места в дереве, и два ручных счёта
+одного каталога расходятся молча.
 
 - [ ] **Шаг 4: Подключить роутер в `backend/app/main.py`**
 
@@ -5197,7 +5479,7 @@ app.include_router(meta_router, prefix="/api")
 - [ ] **Шаг 5: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_meta.py -v`
-Expected: PASS, 12 passed
+Expected: PASS, 26 passed
 
 - [ ] **Шаг 6: Коммит**
 
