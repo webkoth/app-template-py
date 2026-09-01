@@ -1,13 +1,237 @@
-// Заглушка. Настоящий экран пишется своей задачей — до тех пор страница
-// существует, чтобы дерево маршрутов собиралось и `make check` оставался
-// зелёным: иначе проверка типов красная шесть задач подряд, и понять, что
-// именно сломала очередная правка, нечем.
+import { useForm } from "react-hook-form"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { z } from "zod"
+import { api, toApiError } from "@/api/client"
 import { PageMain } from "@/components/page-main"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { formatDateTime } from "@/lib/format"
+
+const ROLES = ["viewer", "editor", "admin"] as const
+const ROLE_LABEL: Record<(typeof ROLES)[number], string> = {
+  viewer: "Смотрит",
+  editor: "Правит",
+  admin: "Управляет",
+}
+
+const schema = z.object({
+  login: z.string().min(1, "Укажи логин").regex(/^\S+$/, "Логин без пробелов"),
+  name: z.string().min(1, "Укажи имя"),
+  role: z.enum(ROLES),
+  password: z.string().min(8, "Не короче восьми символов"),
+})
+
+type Values = z.infer<typeof schema>
 
 export function UsersPage() {
+  const queryClient = useQueryClient()
+  const users = useQuery({
+    queryKey: ["users"],
+    queryFn: async () => (await api.GET("/api/users")).data ?? [],
+  })
+
+  const form = useForm<Values>({
+    resolver: zodResolver(schema),
+    defaultValues: { login: "", name: "", role: "viewer", password: "" },
+  })
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["users"] })
+
+  const create = useMutation({
+    mutationFn: async (values: Values) => {
+      const { error } = await api.POST("/api/users", { body: values })
+      if (error) throw error
+    },
+    onSuccess: async () => {
+      form.reset()
+      await invalidate()
+    },
+    onError: (error) => {
+      const parsed = toApiError(error)
+      if (parsed.field && parsed.field in form.getValues()) {
+        form.setError(parsed.field as keyof Values, { message: parsed.message })
+      } else {
+        form.setError("root", { message: parsed.message })
+      }
+    },
+  })
+
+  const update = useMutation({
+    mutationFn: async (input: {
+      id: string
+      role?: (typeof ROLES)[number]
+      status?: "active" | "disabled"
+    }) => {
+      const { error } = await api.PATCH("/api/users/{user_id}", {
+        params: { path: { user_id: input.id } },
+        body: { role: input.role ?? null, status: input.status ?? null },
+      })
+      if (error) throw error
+    },
+    onSuccess: invalidate,
+  })
+
   return (
     <PageMain>
       <h1 className="text-3xl font-semibold">Люди</h1>
+      <p className="text-muted-foreground mt-2 max-w-2xl text-sm">
+        Учётные записи не удаляются: удалённый автор записи в журнале
+        превратил бы историю в набор осиротевших строк. Вместо удаления —
+        отключение: вход закрывается, уже выданные сессии отзываются.
+      </p>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>Новая учётная запись</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form
+            className="grid gap-4 sm:grid-cols-4"
+            onSubmit={form.handleSubmit((values) => create.mutate(values))}
+          >
+            <div className="space-y-2">
+              <Label htmlFor="login">Логин</Label>
+              <Input id="login" {...form.register("login")} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="name">Имя</Label>
+              <Input id="name" {...form.register("name")} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="role">Роль</Label>
+              <Select
+                value={form.watch("role")}
+                onValueChange={(v) => form.setValue("role", v as Values["role"])}
+              >
+                <SelectTrigger id="role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {ROLES.map((role) => (
+                      <SelectItem key={role} value={role}>
+                        {ROLE_LABEL[role]}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Пароль</Label>
+              <Input id="password" type="password" {...form.register("password")} />
+            </div>
+            <div className="sm:col-span-4 space-y-3">
+              {Object.values(form.formState.errors).map((error, index) => (
+                <Alert key={index} variant="destructive">
+                  <AlertDescription>{error?.message as string}</AlertDescription>
+                </Alert>
+              ))}
+              <Button type="submit" disabled={create.isPending}>
+                Завести
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Table className="mt-8">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Логин</TableHead>
+            <TableHead>Имя</TableHead>
+            <TableHead>Роль</TableHead>
+            <TableHead>Последний вход</TableHead>
+            <TableHead className="text-right">Доступ</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {users.data?.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={5} className="text-muted-foreground py-8 text-center">
+                Учётных записей пока нет.
+              </TableCell>
+            </TableRow>
+          )}
+          {users.data?.map((user) => (
+            <TableRow key={user.id}>
+              <TableCell className="font-medium">{user.login}</TableCell>
+              <TableCell>{user.name}</TableCell>
+              <TableCell>
+                <Select
+                  // key привязан к значению: без него после обновления
+                  // списка строка не размонтируется, и Select показывает
+                  // старую роль при изменившихся данных.
+                  key={`${user.id}-${user.role}`}
+                  value={user.role}
+                  onValueChange={(role) =>
+                    update.mutate({ id: user.id, role: role as (typeof ROLES)[number] })
+                  }
+                >
+                  <SelectTrigger className="w-36">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {ROLES.map((role) => (
+                        <SelectItem key={role} value={role}>
+                          {ROLE_LABEL[role]}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                {user.last_login_at ? formatDateTime(user.last_login_at) : "не входил"}
+              </TableCell>
+              <TableCell className="text-right">
+                {user.status === "active" ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => update.mutate({ id: user.id, status: "disabled" })}
+                  >
+                    Отключить
+                  </Button>
+                ) : (
+                  <div className="flex items-center justify-end gap-2">
+                    <Badge variant="secondary">отключена</Badge>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => update.mutate({ id: user.id, status: "active" })}
+                    >
+                      Включить
+                    </Button>
+                  </div>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
     </PageMain>
   )
 }
