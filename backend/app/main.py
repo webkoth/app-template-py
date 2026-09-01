@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.core.db import SessionFactory
-from app.core.errors import register_error_handlers
+from app.core.errors import ERROR_RESPONSES, register_error_handlers
 from app.core.static import mount_frontend
 from app.features.audit.router import router as audit_router
 from app.features.auth.router import router as auth_router
@@ -67,7 +67,7 @@ def create_app() -> FastAPI:
         expenses_router,
         audit_router,
     ):
-        app.include_router(router, prefix="/api")
+        app.include_router(router, prefix="/api", responses=ERROR_RESPONSES)
 
     # Монтируется последним: перехватчик /{path:path} обязан стоять после
     # всех маршрутов API, иначе он поглотит их.

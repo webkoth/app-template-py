@@ -7,12 +7,12 @@
 """
 
 import logging
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,36 @@ _VALUE_ERROR_PREFIX = "Value error, "
 class Envelope(TypedDict):
     error: str
     field: str | None
+
+
+class ErrorBody(BaseModel):
+    """Тот же конверт, но для описания схемы.
+
+    TypedDict выше — форма, которую собирают обработчики; эта модель нужна
+    только затем, чтобы конверт попал в OpenAPI и оттуда в типы клиента.
+    Без неё схема описывает лишь успешные ответы, и обещание «расхождение
+    контракта становится ошибкой компиляции» на ошибки не распространяется:
+    разбор отказа на клиенте пишется вслепую и компилятором не проверяется.
+    """
+
+    error: str
+    field: str | None = None
+
+
+# Один и тот же конверт на всех отказах — и объявляется он один раз, на все
+# маршруты сразу. Точный набор кодов по каждому маршруту здесь намеренно не
+# перечисляется: клиенту важна форма ответа, а она везде одна, и попытка
+# держать перечень в согласии с кодом руками разошлась бы с ним на первой же
+# новой проверке прав.
+ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    code: {"model": ErrorBody, "description": text}
+    for code, text in [
+        (400, "Правило не пустило или схема не сошлась"),
+        (401, "Нужно войти"),
+        (403, "Недостаточно прав"),
+        (404, "Запись не найдена"),
+    ]
+}
 
 
 class RuleViolation(Exception):

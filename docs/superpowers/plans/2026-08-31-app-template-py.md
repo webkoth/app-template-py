@@ -3222,12 +3222,12 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'app.core.errors'`
 """
 
 import logging
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger(__name__)
@@ -3281,6 +3281,36 @@ _VALUE_ERROR_PREFIX = "Value error, "
 class Envelope(TypedDict):
     error: str
     field: str | None
+
+
+class ErrorBody(BaseModel):
+    """Тот же конверт, но для описания схемы.
+
+    TypedDict выше — форма, которую собирают обработчики; эта модель нужна
+    только затем, чтобы конверт попал в OpenAPI и оттуда в типы клиента.
+    Без неё схема описывает лишь успешные ответы, и обещание «расхождение
+    контракта становится ошибкой компиляции» на ошибки не распространяется:
+    разбор отказа на клиенте пишется вслепую и компилятором не проверяется.
+    """
+
+    error: str
+    field: str | None = None
+
+
+# Один и тот же конверт на всех отказах — и объявляется он один раз, на все
+# маршруты сразу. Точный набор кодов по каждому маршруту здесь намеренно не
+# перечисляется: клиенту важна форма ответа, а она везде одна, и попытка
+# держать перечень в согласии с кодом руками разошлась бы с ним на первой же
+# новой проверке прав.
+ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    code: {"model": ErrorBody, "description": text}
+    for code, text in [
+        (400, "Правило не пустило или схема не сошлась"),
+        (401, "Нужно войти"),
+        (403, "Недостаточно прав"),
+        (404, "Запись не найдена"),
+    ]
+}
 
 
 class RuleViolation(Exception):
@@ -7479,7 +7509,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.core.db import SessionFactory
-from app.core.errors import register_error_handlers
+from app.core.errors import ERROR_RESPONSES, register_error_handlers
 from app.core.static import mount_frontend
 from app.features.audit.router import router as audit_router
 from app.features.auth.router import router as auth_router
@@ -7539,7 +7569,7 @@ def create_app() -> FastAPI:
         expenses_router,
         audit_router,
     ):
-        app.include_router(router, prefix="/api")
+        app.include_router(router, prefix="/api", responses=ERROR_RESPONSES)
 
     # Монтируется последним: перехватчик /{path:path} обязан стоять после
     # всех маршрутов API, иначе он поглотит их.
@@ -7824,6 +7854,20 @@ cd frontend && npm install openapi-fetch @tanstack/react-query
 npm install -D openapi-typescript vitest
 ```
 
+`npm install -D openapi-typescript` упрётся в ERESOLVE: пакет объявляет
+`peer typescript@"^5"`, а в проекте TypeScript 6, и версии с его поддержкой
+у пакета нет. Лечится записью в `package.json`, а не флагом `--legacy-peer-deps`:
+флаг пришлось бы повторять и в `npm ci` внутри `make install`, то есть
+ослаблять разрешение зависимостей для всего проекта ради одного пакета.
+
+```json
+  "overrides": { "openapi-typescript": { "typescript": "$typescript" } }
+```
+
+`$typescript` — ссылка на версию из собственных devDependencies: так запись
+не устаревает при обновлении TypeScript. Проверено: `npm ci` с нуля проходит,
+генератор с TS 6 работает без замечаний.
+
 - [ ] **Шаг 2: Добавить скрипты в `frontend/package.json`**
 
 В секцию `scripts` дописать:
@@ -7887,8 +7931,12 @@ export function toApiError(error: unknown): ApiError {
 
 - [ ] **Шаг 5: Проверить типы**
 
-Run: `cd frontend && npx tsc --noEmit`
+Run: `cd frontend && npx tsc -b --force`
 Expected: без ошибок.
+
+Именно `-b`, а не `--noEmit`: корневой `tsconfig.json` — это `files: []` плюс
+`references`, и в не-build режиме tsc внутрь не заходит. Проверено — на файле
+с `const probe: number = "строка"` `--noEmit` возвращает 0.
 
 - [ ] **Шаг 6: Коммит**
 
