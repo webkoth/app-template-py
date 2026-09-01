@@ -79,15 +79,24 @@ async def test_limit_refusal_speaks_russian(client, login_as):
     )
 
 
-async def test_interactive_docs_are_off(client, login_as):
+async def test_interactive_docs_are_off(client):
     # Страницы FastAPI выключены намеренно: на контуре они висели бы
     # открытым описанием API. Решение принято в задаче 17 и не проверялось
     # ничем — во всём наборе тестов не было ни одного упоминания /docs.
-    assert (await client.get("/docs")).status_code == 404
-    assert (await client.get("/redoc")).status_code == 404
+    #
+    # Проверяется содержимое, а не код ответа. Как только собран фронтенд,
+    # `/docs` перестаёт быть четырёхсоткой: это обычный путь SPA, и его
+    # подхватывает перехватчик. Проверка на 404 была зелёной ровно до первой
+    # сборки — и краснела бы на контуре, где сборка есть всегда.
+    for path, marker in [("/docs", "swagger-ui"), ("/redoc", "redoc")]:
+        assert marker not in (await client.get(path)).text.lower(), path
+    # Схема тоже закрыта: страницы без неё бесполезны, а она без них — нет.
+    # Снова по содержимому: со сборкой ответ — index.html, без сборки —
+    # конверт «маршрут не найден», и оба не содержат описания маршрутов.
+    assert '"paths"' not in (await client.get("/openapi.json")).text
 
 
-async def test_schema_describes_the_api(client):
+async def test_schema_describes_the_api():
     # Из этой схемы генерируются типы клиента. Пустая или неполная схема
     # означает молча пропавшие маршруты на фронтенде — а `make check-openapi`
     # ловит только расхождение с уже сгенерированным файлом.

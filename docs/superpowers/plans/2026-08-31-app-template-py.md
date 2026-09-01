@@ -716,8 +716,14 @@ check-backend:
 	cd backend && uv run --group lint lint-imports --config .importlinter
 	cd backend && uv run pytest
 
+# tsc -b, а не tsc --noEmit. Корневой tsconfig.json — это `files: []` плюс
+# references, и в не-build режиме tsc в references не заходит: проверка
+# возвращала ноль на файле с `const probe: number = "строка"`. Замерено —
+# --noEmit код 0, -b код 2. То есть фронтенд-типы не проверялись бы вовсе, а
+# строка в Makefile выглядела бы сделанной работой. --force обязателен:
+# без него tsc верит своему кэшу сборки и молчит.
 check-frontend: check-openapi
-	cd frontend && npx tsc --noEmit
+	cd frontend && npx tsc -b --force
 	cd frontend && npm run test
 
 # Расхождение контракта ловится здесь: бэкенд поменял схему, фронт не
@@ -7104,15 +7110,24 @@ async def test_limit_refusal_speaks_russian(client, login_as):
     )
 
 
-async def test_interactive_docs_are_off(client, login_as):
+async def test_interactive_docs_are_off(client):
     # Страницы FastAPI выключены намеренно: на контуре они висели бы
     # открытым описанием API. Решение принято в задаче 17 и не проверялось
     # ничем — во всём наборе тестов не было ни одного упоминания /docs.
-    assert (await client.get("/docs")).status_code == 404
-    assert (await client.get("/redoc")).status_code == 404
+    #
+    # Проверяется содержимое, а не код ответа. Как только собран фронтенд,
+    # `/docs` перестаёт быть четырёхсоткой: это обычный путь SPA, и его
+    # подхватывает перехватчик. Проверка на 404 была зелёной ровно до первой
+    # сборки — и краснела бы на контуре, где сборка есть всегда.
+    for path, marker in [("/docs", "swagger-ui"), ("/redoc", "redoc")]:
+        assert marker not in (await client.get(path)).text.lower(), path
+    # Схема тоже закрыта: страницы без неё бесполезны, а она без них — нет.
+    # Снова по содержимому: со сборкой ответ — index.html, без сборки —
+    # конверт «маршрут не найден», и оба не содержат описания маршрутов.
+    assert '"paths"' not in (await client.get("/openapi.json")).text
 
 
-async def test_schema_describes_the_api(client):
+async def test_schema_describes_the_api():
     # Из этой схемы генерируются типы клиента. Пустая или неполная схема
     # означает молча пропавшие маршруты на фронтенде — а `make check-openapi`
     # ловит только расхождение с уже сгенерированным файлом.
@@ -7502,10 +7517,17 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="apptemplate",
         lifespan=lifespan,
-        # Схема нужна для генерации типов клиента; интерактивные страницы
-        # FastAPI выключены — на контуре они висели бы открытым описанием API.
+        # Интерактивные страницы FastAPI выключены: на контуре они висели бы
+        # открытым описанием API. Вместе с ними выключен и openapi_url —
+        # иначе обещание не выполняется: страницы закрыты, а сама схема
+        # по-прежнему отдаётся любому, кто знает адрес. Замерено: 18 кБ
+        # описания всех маршрутов без единой проверки прав.
+        #
+        # Генерации типов клиента это не мешает: схему печатает
+        # `python -m app.openapi` в том же процессе, не по HTTP.
         docs_url=None,
         redoc_url=None,
+        openapi_url=None,
     )
 
     register_error_handlers(app)
@@ -7694,14 +7716,25 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Шаг 4: Добавить псевдоним пути в `frontend/tsconfig.app.json`**
+- [ ] **Шаг 4: Добавить псевдоним пути в ОБА tsconfig**
 
-В секцию `compilerOptions` дописать:
+В `frontend/tsconfig.app.json`, в секцию `compilerOptions`:
 
 ```json
-    "baseUrl": ".",
     "paths": { "@/*": ["./src/*"] }
 ```
+
+`baseUrl` не добавляется. TypeScript 6 объявил его устаревшим, и сборка
+падает: `error TS5101: Option 'baseUrl' is deprecated and will stop
+functioning in TypeScript 7.0`. Без него `paths` разрешаются от каталога
+самого tsconfig — то же самое поведение.
+
+То же самое дописать и в корневой `frontend/tsconfig.json`. Он выглядит
+пустым (`"files": []` плюс `references`), и обойти его соблазнительно — но
+`shadcn` CLI читает именно его. Без псевдонима первый же `shadcn add`
+разложил компоненты в каталог с буквальным именем `frontend/@/components/ui/`,
+и сборка при этом осталась зелёной: компоненты никем не импортируются, пока
+экранов нет. Обнаруживается такое в задаче 26, за три задачи от причины.
 
 - [ ] **Шаг 5: Написать `frontend/src/index.css`**
 
@@ -7711,7 +7744,7 @@ export default defineConfig({
 
 @custom-variant dark (&:is(.dark *));
 
-/* theme:start — блок ниже пишет `npm run theme`, руками не редактируется */
+/* theme:start — не править руками, см. npm run theme */
 :root {
   --radius: 0.625rem;
   --background: oklch(1 0 0);
@@ -7731,6 +7764,18 @@ export default defineConfig({
 
 Полный блок токенов появится в задаче 25 — его пишет команда применения
 темы, а не рука. Здесь достаточно маркеров, между которыми она пишет.
+
+**Текст маркера — дословно этот.** `lib/design/apply.ts`, который копируется
+в задаче 25 без правок, ищет его через `indexOf` по точному совпадению.
+Любая другая формулировка — и `npm run theme` отвечает «не найдены маркеры
+темы», причём в задаче 25, а не здесь.
+
+**После `shadcn init` (шаг 6) блок `.dark { … }` окажется ПОСЛЕ `theme:end`
+— его надо перенести внутрь маркеров.** Команда применения темы печатает
+между маркерами и `:root`, и `.dark`; оставшийся снаружи блок перекроет
+собой тёмные токены выбранной темы, и тёмная тема останется серой при любой
+выбранной. Светлая при этом сменится — то есть половина работы выглядит
+сделанной.
 
 - [ ] **Шаг 6: Поставить shadcn/ui**
 

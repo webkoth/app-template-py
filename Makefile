@@ -39,8 +39,14 @@ check-backend:
 	cd backend && uv run --group lint lint-imports --config .importlinter
 	cd backend && uv run pytest
 
+# tsc -b, а не tsc --noEmit. Корневой tsconfig.json — это `files: []` плюс
+# references, и в не-build режиме tsc в references не заходит: проверка
+# возвращала ноль на файле с `const probe: number = "строка"`. Замерено —
+# --noEmit код 0, -b код 2. То есть фронтенд-типы не проверялись бы вовсе, а
+# строка в Makefile выглядела бы сделанной работой. --force обязателен:
+# без него tsc верит своему кэшу сборки и молчит.
 check-frontend: check-openapi
-	cd frontend && npx tsc --noEmit
+	cd frontend && npx tsc -b --force
 	cd frontend && npm run test
 
 # Расхождение контракта ловится здесь: бэкенд поменял схему, фронт не
