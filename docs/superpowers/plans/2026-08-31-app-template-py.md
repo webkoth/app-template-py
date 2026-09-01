@@ -2569,7 +2569,7 @@ def verify_session_token(
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_token.py -v`
-Expected: PASS, 12 passed
+Expected: PASS, 11 passed
 
 - [ ] **Шаг 5: Коммит**
 
