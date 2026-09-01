@@ -107,6 +107,18 @@
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: 'Inter Variable', sans-serif;
+  /* Семантические цвета. Без этих строк тема пишет токены, которых нет как
+     утилит: --success объявлен, а класса bg-success не существует, и
+     `<div className="bg-success">` молча не красится ничем. Найти такое
+     трудно — ошибки нет ни в сборке, ни в консоли. */
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-highlight: var(--highlight);
+  --color-highlight-foreground: var(--highlight-foreground);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);

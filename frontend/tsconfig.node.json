@@ -19,5 +19,11 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts"]
+  // vitest.config.ts тоже проверяется типами: без него tsc -b этот файл не
+  // видит вовсе, и опечатка в конфиге тестов проходит мимо `make check`.
+  // Команда смены темы живёт не здесь, а в tsconfig.app.json: она импортирует
+  // модули из src, а этот конфиг требует у относительных импортов явного
+  // расширения .js — то есть заставил бы дописать его и в скопированном
+  // lib/design, разведя два шаблона на ровном месте.
+  "include": ["vite.config.ts", "vitest.config.ts"]
 }

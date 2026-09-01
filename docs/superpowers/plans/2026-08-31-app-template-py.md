@@ -7993,7 +7993,30 @@ import { buildThemeCss } from "../src/lib/design/css"
 import { THEMES, findTheme } from "../src/lib/design/themes"
 ```
 
-- [ ] **Шаг 3: Написать `frontend/vitest.config.ts`**
+- [ ] **Шаг 3: Дописать семантические цвета в `@theme inline`**
+
+Тема пишет токены `--success`, `--warning`, `--info`, `--highlight` с их
+`-foreground`, но утилит для них не существует, пока они не объявлены в
+`@theme inline` в `frontend/src/index.css` — рядом с уже существующими
+`--color-chart-*` и `--color-sidebar-*`:
+
+```css
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-highlight: var(--highlight);
+  --color-highlight-foreground: var(--highlight-foreground);
+```
+
+Без этих восьми строк `--success` объявлен, а класса `bg-success` нет:
+`<div className="bg-success">` молча не красится ничем. Ошибки не будет ни
+в сборке, ни в консоли — только пустое место на экране, и искать его
+причину придётся в теме, а не в разметке.
+
+- [ ] **Шаг 4: Написать `frontend/vitest.config.ts` и `frontend/tsconfig.scripts.json`**
 
 ```typescript
 import path from "node:path"
@@ -8010,7 +8033,51 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Шаг 4: Прогнать тесты и применить тему по умолчанию**
+Здесь же — отдельный конфиг типов для скриптов, `frontend/tsconfig.scripts.json`,
+и ссылка на него в `references` корневого `tsconfig.json`. В
+`tsconfig.node.json` рядом с `vite.config.ts` добавляется `vitest.config.ts`.
+
+```json
+{
+  // Отдельный конфиг для скриптов. Они не браузерные и не сборочные: ходят
+  // в файловую систему через node:fs и при этом импортируют модули из src.
+  //
+  // Почему не в tsconfig.node.json: там moduleResolution nodenext, который
+  // требует у относительных импортов явного расширения .js. Скрипт темы
+  // импортирует lib/design — скопированный из TS-шаблона без правок, — и
+  // дописывать расширения пришлось бы там, разведя два шаблона на ровном
+  // месте.
+  //
+  // Почему не в tsconfig.app.json: у того "types": ["vite/client"], то есть
+  // без типов Node. Добавить их туда значило бы разрешить process и node:fs
+  // в браузерном коде — ровно там, где их быть не должно.
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.scripts.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023"],
+    "paths": { "@/*": ["./src/*"] },
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["scripts"]
+}
+```
+
+Без этого конфига `scripts/` не проверяется типами вообще: `tsc -b` его
+попросту не видит, и опечатка в команде смены темы всплывает только при
+запуске. Проверено — включение сразу нашло четыре ошибки в файле, который
+до того считался исправным.
+
+- [ ] **Шаг 5: Прогнать тесты и применить тему по умолчанию**
 
 ```bash
 cd frontend && npm run test && npm run theme -- blue
@@ -8024,13 +8091,13 @@ Expected: тесты зелёные; в `src/index.css` между маркер�
 23), так что с этого момента ворота открыты и красное на ветке снова видно
 сразу.
 
-- [ ] **Шаг 5: Прогнать полную проверку**
+- [ ] **Шаг 6: Прогнать полную проверку**
 
 Run: `make check`
 Expected: зелёные и бэкенд, и фронтенд — строки про пропуск фронтенда больше
 нет.
 
-- [ ] **Шаг 6: Коммит**
+- [ ] **Шаг 7: Коммит**
 
 ```bash
 git add frontend/src/lib/design/ frontend/scripts/ frontend/vitest.config.ts frontend/src/index.css
