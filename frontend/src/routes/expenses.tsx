@@ -40,7 +40,9 @@ import {
 import { currentUserQuery, hasRank } from "@/lib/auth"
 import { formatDate, formatMoney } from "@/lib/format"
 
-const CATEGORIES = [
+// Экспортируется ради витрины /design: она показывает те же выпадающие
+// списки, что и этот экран, и со своей копией списка разошлась бы молча.
+export const CATEGORIES = [
   "Аренда",
   "Софт",
   "Оборудование",
