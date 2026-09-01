@@ -1,0 +1,190 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: apptemplate_dev
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Две РАЗНЫЕ базы, а не одна на обе переменные. Обвязка тестов
+      # отказывается работать при совпадении адресов намеренно: она
+      # сбрасывает схему целиком, и совпадение однажды стоило схемы рабочей
+      # базы. Один адрес в обеих переменных ронял бы каждый прогон CI на
+      # сборе тестов, ещё до первой проверки.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/apptemplate_dev
+      DATABASE_URL_E2E: postgresql://postgres:postgres@localhost:5432/apptemplate_e2e
+      APP_ENV: local
+      APP_AUTH_SECRET: e2e-secret-not-used-anywhere-real-000000
+      COOKIE_SECURE: "false"
+    steps:
+      - uses: actions/checkout@v5
+      # Вторая база. Контейнер Postgres заводит только одну — ту, что в
+      # POSTGRES_DB, — а тестам нужны две: прогон pytest сбрасывает схему
+      # целиком, и делать это в базе, на которой проверяются миграции,
+      # нельзя. psql на ubuntu-latest предустановлен.
+      - name: Завести отдельную базу под тесты
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -c 'CREATE DATABASE apptemplate_e2e'
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: uv sync --frozen --group lint
+        working-directory: backend
+      - run: uv run ruff format --check .
+        working-directory: backend
+      - run: uv run ruff check .
+        working-directory: backend
+      - run: uv run mypy app
+        working-directory: backend
+      - run: uv run --group lint lint-imports --config .importlinter
+        working-directory: backend
+      - run: uv run alembic upgrade head
+        working-directory: backend
+      - run: uv run pytest
+        working-directory: backend
+      - run: npm ci
+        working-directory: frontend
+      # tsc -b --force, а не tsc --noEmit: корневой tsconfig.json — это
+      # `files: []` плюс references, и в не-build режиме tsc в references не
+      # заходит, то есть --noEmit не проверял бы во фронтенде ничего.
+      # Подробности — в Makefile и в ci.yml.
+      - run: npx tsc -b --force
+        working-directory: frontend
+      - run: npm run test
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npx playwright test
+        working-directory: frontend
+
+  deploy:
+    needs: quality
+    runs-on: ubuntu-latest
+    concurrency: deploy
+    env:
+      SLUG: apptemplate
+    steps:
+      - uses: actions/checkout@v5
+
+      # Фронтенд собирается ЗДЕСЬ, а не на сервере. Так на контуре не
+      # оказывается ни Node, ни node_modules: человек, выбравший
+      # Python-шаблон, не обнаруживает в бою вторую экосистему. Побочно это
+      # снимает с сервера самый прожорливый шаг доставки.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+
+      - name: Записать версию сборки
+        run: |
+          set -euo pipefail
+          COMMIT=$(git rev-parse --short HEAD)
+          # Пустой результат — не мелочь: при неполном клоне `git rev-parse`
+          # печатает пустоту, и файл выходит валидным JSON с пустой версией.
+          # Маршрут /api/meta/build-info отдал бы 200 и пустую строку, то есть
+          # тихо сообщил бы «версия такая» вместо «версию не знаю» — а идут к
+          # нему ровно тогда, когда разбираются, что именно доставлено.
+          test -n "$COMMIT" || { echo "git rev-parse вернул пусто"; exit 1; }
+          printf '{"commit":"%s","built_at":"%s"}\n' \
+            "$COMMIT" "$(date -u +%FT%TZ)" > build-info.json
+
+      - name: Упаковать статику и версию
+        run: tar -czf dist.tar.gz -C frontend dist -C ../ build-info.json
+
+      - name: Доставка на контур
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+          scp dist.tar.gz deploy@${{ secrets.SERVER_HOST }}:/tmp/$SLUG-dist.tar.gz
+
+          ssh deploy@${{ secrets.SERVER_HOST }} 'bash -s' <<EOF
+          set -euo pipefail
+          SLUG=$SLUG
+          DIR=/var/www/\$SLUG
+          cd "\$DIR"
+          source "\$DIR/.deploy-env"   # даёт PORT
+
+          # Первый деплой: кода ещё нет. Клонировать нельзя — каталог не
+          # пуст: app-provision положил туда .env и .deploy-env, а git clone
+          # в непустой каталог отказывается. Репозиторий разворачивается на
+          # месте; файлы окружения целы — reset --hard не трогает
+          # неотслеживаемое.
+          if [ ! -d "\$DIR/.git" ]; then
+            git init -q -b main
+            git remote add origin "git@github.com-\$SLUG:${{ github.repository }}.git"
+          fi
+
+          git fetch origin main
+          git reset --hard origin/main
+
+          # Собранная статика и версия приезжают архивом, а не собираются
+          # здесь: Node на этом сервере нет.
+          rm -rf "\$DIR/frontend/dist"
+          mkdir -p "\$DIR/frontend"
+          tar -xzf /tmp/\$SLUG-dist.tar.gz -C "\$DIR/frontend" dist
+          tar -xzf /tmp/\$SLUG-dist.tar.gz -C "\$DIR" build-info.json
+          rm -f /tmp/\$SLUG-dist.tar.gz
+
+          # PATH задаётся явно. \`ssh host 'bash -s'\` запускает неинтерактивный
+          # и не-логин шелл: он не читает ни .bashrc, ни .profile, и PATH
+          # приходит куцый — /usr/local/bin:/usr/bin:/bin. node, npm и pm2
+          # лежат в нём, потому что стоят системно, а uv ставится в
+          # ~/.local/bin под пользователя deploy, и без этой строки доставка
+          # падает на «uv: command not found» уже после git reset --hard —
+          # то есть на контуре остаётся новый код при старом процессе.
+          export PATH="\$HOME/.local/bin:\$PATH"
+
+          cd "\$DIR/backend"
+          uv sync --frozen
+          uv run alembic upgrade head
+
+          export PM2_HOME=/home/deploy/.pm2
+          if pm2 describe "\$SLUG" > /dev/null 2>&1; then
+            pm2 reload "\$SLUG" --update-env
+          else
+            pm2 start "\$DIR/backend/.venv/bin/python" --name "\$SLUG" \
+              --cwd "\$DIR/backend" \
+              -- -m uvicorn app.main:app --host 127.0.0.1 --port "\$PORT"
+            pm2 save
+          fi
+
+          sleep 3
+          # Проверяем /api/health, а не корень: корень отдаёт index.html с
+          # кодом 200 даже при недоступной базе, и доставка объявляла бы
+          # успешным заведомо нерабочий контур.
+          CODE=\$(curl -s -o /dev/null -w '%{http_code}' \
+            "http://127.0.0.1:\$PORT/api/health")
+          [ "\$CODE" = "200" ] || { echo "контур ответил \$CODE"; exit 1; }
+          echo "доставлено: \$(git rev-parse --short HEAD)"
+          EOF
