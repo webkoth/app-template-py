@@ -121,6 +121,12 @@ export function UsersPage() {
             <div className="space-y-2">
               <Label htmlFor="role">Роль</Label>
               <Select
+                // items обязателен: Select здесь из Base UI, и его
+                // SelectValue без этой карты печатает в кнопке само
+                // значение — «viewer» вместо «Смотрит». Найдено глазами:
+                // ROLE_LABEL применялся только к пунктам списка, а
+                // закрытая кнопка показывала английское значение из базы.
+                items={ROLE_LABEL}
                 value={form.watch("role")}
                 onValueChange={(v) => form.setValue("role", v as Values["role"])}
               >
@@ -180,6 +186,9 @@ export function UsersPage() {
               <TableCell>{user.name}</TableCell>
               <TableCell>
                 <Select
+                  // items — та же карта подписей, что и в форме выше: без
+                  // неё в строке таблицы стоит «viewer», а не «Смотрит».
+                  items={ROLE_LABEL}
                   // key привязан к значению: без него после обновления
                   // списка строка не размонтируется, и Select показывает
                   // старую роль при изменившихся данных.
