@@ -29,26 +29,44 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(
-    title="apptemplate",
-    lifespan=lifespan,
-    # Схема нужна для генерации типов клиента; интерактивные страницы
-    # FastAPI выключены — на контуре они висели бы открытым описанием API.
-    docs_url=None,
-    redoc_url=None,
-)
+def create_app() -> FastAPI:
+    """Собирает приложение.
 
-register_error_handlers(app)
+    Фабрика, а не сборка по месту, ради одной проверки: порядок монтирования
+    здесь несущий, а поймать его перестановку иначе нечем. Пока сборки
+    фронтенда нет, `mount_frontend` выходит первой же строкой, перестановка
+    ничего не меняет, и мутация проходит молча — а на контуре, где сборка
+    есть, та же перестановка отвечает 404 на КАЖДЫЙ маршрут API. Проверено:
+    с подложенной сборкой падают 36 тестов.
 
-for router in (
-    meta_router,
-    auth_router,
-    users_router,
-    expenses_router,
-    audit_router,
-):
-    app.include_router(router, prefix="/api")
+    С фабрикой проверка собирает приложение сама, подсунув каталог сборки, и
+    смотрит, что перехватчик зарегистрирован последним.
+    """
+    app = FastAPI(
+        title="apptemplate",
+        lifespan=lifespan,
+        # Схема нужна для генерации типов клиента; интерактивные страницы
+        # FastAPI выключены — на контуре они висели бы открытым описанием API.
+        docs_url=None,
+        redoc_url=None,
+    )
 
-# Монтируется последним: перехватчик /{path:path} обязан стоять после всех
-# маршрутов API, иначе он поглотит их.
-mount_frontend(app)
+    register_error_handlers(app)
+
+    for router in (
+        meta_router,
+        auth_router,
+        users_router,
+        expenses_router,
+        audit_router,
+    ):
+        app.include_router(router, prefix="/api")
+
+    # Монтируется последним: перехватчик /{path:path} обязан стоять после
+    # всех маршрутов API, иначе он поглотит их.
+    mount_frontend(app)
+    return app
+
+
+# Имя `app` остаётся: `uvicorn app.main:app` и обвязка тестов ссылаются на него.
+app = create_app()

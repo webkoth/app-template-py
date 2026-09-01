@@ -31,4 +31,23 @@ def mount_frontend(app: FastAPI) -> None:
         # клиент ждёт JSON и покажет «неожиданный ответ» вместо 404.
         if path.startswith("api/"):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Маршрут не найден")
+
+        # Файл с таким именем в сборке — отдаём его. Монтирования /assets
+        # мало: Vite кладёт в dist ещё и всё содержимое public — favicon,
+        # robots.txt, картинки, — а они лежат в корне сборки, а не в assets.
+        # Без этой ветки запрос на /favicon.ico получал бы index.html с
+        # кодом 200, то есть HTML вместо картинки, и вкладка оставалась бы
+        # без значка без единой ошибки в консоли.
+        #
+        # Путь склеивается из запроса, то есть эта ветка открывает диск, и
+        # держит её ровно одна проверка — принадлежность DIST после resolve.
+        # Без неё `GET /../../.env` отдаёт наружу секрет подписи сессий: на
+        # контуре .env лежит в корне репозитория, ровно двумя уровнями выше
+        # dist. Воспроизведено на живом uvicorn — утекает, код 200; uvicorn
+        # путь не схлопывает и %2F раскодирует сам. Обращение к каталогу
+        # уходит в index.html как обычный маршрут SPA.
+        candidate = (DIST / path).resolve()
+        if candidate.is_file() and candidate.is_relative_to(DIST.resolve()):
+            return FileResponse(candidate)
+
         return FileResponse(DIST / "index.html")
