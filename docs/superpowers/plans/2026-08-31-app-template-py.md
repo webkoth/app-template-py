@@ -3280,6 +3280,29 @@ class RuleViolation(Exception):
         self.field = field
 
 
+class RecordNotFound(Exception):
+    """Записи нет. Ожидаемое, отвечает 404.
+
+    Свой класс, а не `LookupError`. Роутеры ловили `LookupError` и выносили
+    наружу `str(exc)` — и то и другое оказалось дорого. `LookupError` —
+    предок `KeyError` и `IndexError`, поэтому ЛЮБОЙ такой сбой внутри
+    сервиса объявлялся «не найдено»: воспроизведено на строке с ролью,
+    которой ещё нет в коде (обычный порядок выката миграции), — запрос
+    вернул 404 с текстом «'owner' is not among the defined enum values.
+    Enum name: role. Possible values: viewer, editor, admin». Настоящий сбой
+    выдан за отсутствие записи, внутренности уехали клиенту вопреки правилу
+    этого же модуля, и в лог не попало ничего: до обработчика пятисотки дело
+    не дошло.
+
+    Текст ответа задаёт тот, кто бросает, — но это НАШ текст, а не
+    сообщение чужого исключения.
+    """
+
+    def __init__(self, message: str = "Запись не найдена") -> None:
+        super().__init__(message)
+        self.message = message
+
+
 def _printable(text: str) -> str:
     """Убирает из текста то, что невозможно отправить.
 
@@ -3349,6 +3372,15 @@ def register_error_handlers(app: FastAPI) -> None:
                 # пользовательского ввода, что и текст, и незащищённый
                 # суррогат в нём роняет построение ответа ровно так же.
                 field=_printable(exc.field) if exc.field else None,
+            ),
+        )
+
+    @app.exception_handler(RecordNotFound)
+    async def _missing(_: Request, exc: RecordNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=Envelope(
+                error=_printable(exc.message) or FALLBACK_MESSAGE, field=None
             ),
         )
 
@@ -5494,6 +5526,7 @@ git commit -m "feat: служебные маршруты health, build-info и �
 ### Задача 20: Пользователи
 
 **Files:**
+- Create: `backend/app/domain/text.py`
 - Create: `backend/app/features/users/schemas.py`
 - Create: `backend/app/features/users/service.py`
 - Create: `backend/app/features/users/router.py`
@@ -5504,6 +5537,7 @@ git commit -m "feat: служебные маршруты health, build-info и �
 Create `backend/tests/api/test_users.py`:
 
 ```python
+import pytest
 from sqlalchemy import select
 
 from app.core.audit import AuditLog
@@ -5561,6 +5595,37 @@ async def test_create_user(client, session, login_as):
     assert created.role is Role.editor
 
 
+async def test_user_out_never_carries_the_hash(client, login_as):
+    # Состав ответа не проверял ничто, и мутация «отдать password_hash в
+    # UserOut» оставалась зелёной. Зеркальный запрет для журнала написан и
+    # объяснён — здесь дыра была шире: список учётных записей открыт любому
+    # админу и уходит в браузер.
+    await login_as(role=Role.admin, login="boss")
+    body = (await client.get("/api/users")).json()
+    assert body and all("password_hash" not in row for row in body), body
+    assert "scrypt" not in (await client.get("/api/users")).text
+
+
+async def test_user_out_carries_status_and_last_login(client, login_as):
+    # Обратная сторона: экран учётных записей показывает, кто отключён и
+    # когда заходил. Мутация «убрать эти поля» тоже проходила молча.
+    await login_as(role=Role.admin, login="boss")
+    row = (await client.get("/api/users")).json()[0]
+    assert row["status"] == "active"
+    assert "last_login_at" in row
+
+
+async def test_list_is_ordered_by_creation(client, session, login_as, make_user):
+    # Порядок списка не закреплял ничто. Второй ключ — id: created_at
+    # ставится в коде, и две записи одной миллисекунды иначе меняются
+    # местами от запроса к запросу.
+    await login_as(role=Role.admin, login="boss")
+    await make_user(login="первый")
+    await make_user(login="второй")
+    logins = [u["login"] for u in (await client.get("/api/users")).json()]
+    assert logins == ["boss", "первый", "второй"]
+
+
 async def test_create_writes_audit_in_same_transaction(client, session, login_as):
     await login_as(role=Role.admin, login="boss")
     await client.post(
@@ -5614,6 +5679,179 @@ async def test_password_never_reaches_the_journal(client, session, login_as):
     )
     details = (await session.execute(select(AuditLog.detail))).scalars().all()
     assert all("оченьсекретно" not in (d or "") for d in details), details
+
+
+async def test_audit_names_the_account(client, session, login_as, make_user):
+    # Запись «boss | create | User | 01a0… | admin» не отвечает на вопрос,
+    # КОМУ выдали права: логин читается только сверкой UUID с живой базой.
+    # Журнал обещает быть читаемым сам по себе и переживать учётную запись.
+    await login_as(role=Role.admin, login="boss")
+    await client.post(
+        "/api/users",
+        json={
+            "login": "ivan",
+            "name": "Иван",
+            "role": "viewer",
+            "password": "длинныйпароль",
+        },
+    )
+    created = (await session.execute(select(AuditLog))).scalars().one()
+    assert "ivan" in created.detail
+    assert "viewer" in created.detail
+
+
+async def test_update_writes_audit_with_the_previous_value(
+    client, session, login_as, make_user
+):
+    # Аудит ИЗМЕНЕНИЯ не проверял ни один тест — ни что запись есть, ни что
+    # она в той же транзакции; для создания обе проверки стояли. И «роль →
+    # admin» не отвечает, откуда роль поменяли, а журнал читают спустя
+    # месяцы и без базы под рукой.
+    await login_as(role=Role.admin, login="boss")
+    target = await make_user(login="ivan", role=Role.viewer)
+    await client.patch(f"/api/users/{target.id}", json={"role": "editor"})
+    entry = (
+        await session.execute(select(AuditLog).where(AuditLog.action == "update"))
+    ).scalars().one()
+    assert entry.entity_id == str(target.id)
+    assert "ivan" in entry.detail
+    assert "viewer" in entry.detail and "editor" in entry.detail
+
+
+async def test_repeating_the_same_change_is_not_an_error(
+    client, login_as, make_user
+):
+    # Двойной клик или повтор после обрыва связи. Изменение уже применено, и
+    # красное на это человек видеть не должен.
+    await login_as(role=Role.admin, login="boss")
+    target = await make_user(login="ivan", role=Role.viewer)
+    first = await client.patch(f"/api/users/{target.id}", json={"role": "editor"})
+    second = await client.patch(f"/api/users/{target.id}", json={"role": "editor"})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["role"] == "editor"
+
+
+async def test_empty_patch_is_rejected(client, login_as, make_user):
+    # А вот пустое тело — другое дело: запрос собран неверно, и молчать об
+    # этом значит подтверждать несделанную работу.
+    await login_as(role=Role.admin, login="boss")
+    target = await make_user(login="ivan", role=Role.viewer)
+    assert (await client.patch(f"/api/users/{target.id}", json={})).status_code == 400
+
+
+async def test_extra_field_is_rejected(client, login_as, make_user):
+    # Без запрета лишнего заявка с "status" отвечает 201 и заводит запись
+    # АКТИВНОЙ: отправитель уверен, что завёл отключённую. Воспроизведено.
+    await login_as(role=Role.admin, login="boss")
+    created = await client.post(
+        "/api/users",
+        json={
+            "login": "ivan",
+            "name": "Иван",
+            "role": "viewer",
+            "password": "длинныйпароль",
+            "status": "disabled",
+        },
+    )
+    assert created.status_code == 400
+    target = await make_user(login="петя", role=Role.viewer)
+    updated = await client.patch(
+        f"/api/users/{target.id}", json={"role": "editor", "name": "Новое"}
+    )
+    assert updated.status_code == 400
+
+
+async def test_control_characters_rejected(client, login_as):
+    # NUL до вставки не отсеивался, PostgreSQL его не принимает, asyncpg
+    # бросает не IntegrityError — и запрос отвечал пятисоткой, а трейсбек с
+    # параметрами уносил в лог хеш пароля только что заведённой записи.
+    # Воспроизведено. Прочие управляющие символы не роняют ничего и потому
+    # опаснее по-своему: имя «Иван\x1b[31m» заводилось молча.
+    await login_as(role=Role.admin, login="boss")
+    base = {
+        "login": "ivan",
+        "name": "Иван",
+        "role": "viewer",
+        "password": "длинныйпароль",
+    }
+    for field, value in [
+        ("name", "Иван\x00Пет"),
+        ("name", "Иван\x1b[31m"),
+        ("login", "iv\x00an"),
+    ]:
+        response = await client.post("/api/users", json={**base, field: value})
+        assert response.status_code == 400, (field, value, response.text)
+        assert response.json()["field"] == field
+
+
+async def test_digits_with_a_space_are_still_digits(client, login_as):
+    # Запрет на цифровой пароль обходился одним пробелом в конце: «20260831 »
+    # проходил isdigit() и потом нормально работал при входе. Проверяется
+    # обрезанное значение, а хранится исходное — пробел в пароле законен.
+    await login_as(role=Role.admin, login="boss")
+    for password in ["20260831 ", "        "]:
+        response = await client.post(
+            "/api/users",
+            json={
+                "login": "ivan",
+                "name": "Иван",
+                "role": "viewer",
+                "password": password,
+            },
+        )
+        assert response.status_code == 400, password
+        assert response.json()["field"] == "password"
+
+
+async def test_counting_the_remaining_admins(session, make_user):
+    # Правило «нельзя убрать последнего активного администратора» существует
+    # ради одновременных запросов: два админа, A снимает права с B, B — с A.
+    # Оба проходят require_role до чужого commit, строки разные, конфликта
+    # нет — и контур остаётся без единого админа. Воспроизведено; вернуть
+    # права после этого можно только прямым доступом к базе.
+    #
+    # Одним запросом ту дорогу не пройти, поэтому здесь проверяется счётчик,
+    # на котором правило стоит. Ошибись он в любую сторону — и правило либо
+    # не сработает никогда, либо запретит законное понижение.
+    from app.features.users import service
+
+    boss = await make_user(login="boss", role=Role.admin)
+    assert await service.active_admins_besides(session, boss.id) == 0
+
+    second = await make_user(login="второй", role=Role.admin)
+    assert await service.active_admins_besides(session, boss.id) == 1
+    assert await service.active_admins_besides(session, second.id) == 1
+
+    # Отключённый администратор не считается: он войти не может.
+    await make_user(login="третий", role=Role.admin, status=UserStatus.disabled)
+    # Не-администратор тоже.
+    await make_user(login="четвёртый", role=Role.editor)
+    assert await service.active_admins_besides(session, boss.id) == 1
+
+
+async def test_internal_failure_is_not_reported_as_missing(
+    client, login_as, make_user, monkeypatch
+):
+    # `except LookupError` в роутере объявлял «не найдено» любой KeyError и
+    # IndexError изнутри сервиса и выносил наружу текст чужого исключения.
+    # Воспроизведено на строке с ролью, которой ещё нет в коде: 404 с текстом
+    # «'owner' is not among the defined enum values…», и ни строки в логе.
+    from app.features.users import service
+
+    await login_as(role=Role.admin, login="boss")
+    target = await make_user(login="ivan", role=Role.viewer)
+
+    async def boom(*args: object, **kwargs: object) -> None:
+        raise KeyError("внутренности")
+
+    monkeypatch.setattr(service, "update_user", boom)
+    # Исключение обязано уйти наверх — там его встретит обработчик пятисотки,
+    # который пишет в лог и отвечает общим текстом. Обвязка тестов такие
+    # исключения пробрасывает, и это ровно то, что здесь и проверяется:
+    # раньше на их месте был 404 с текстом чужого исключения в теле.
+    with pytest.raises(KeyError):
+        await client.patch(f"/api/users/{target.id}", json={"role": "editor"})
 
 
 async def test_duplicate_login_rejected_with_message(client, login_as):
@@ -5806,17 +6044,64 @@ async def test_unknown_user_is_404(client, login_as):
 Run: `cd backend && uv run pytest tests/api/test_users.py`
 Expected: FAIL — маршрутов `/api/users` ещё нет.
 
-- [ ] **Шаг 3: Написать `backend/app/features/users/schemas.py`**
+- [ ] **Шаг 3: Написать `backend/app/domain/text.py`**
+
+Один вид «обычного текста» на всё приложение: имя человека, назначение
+расхода — всё, что человек набирает и потом читает глазами.
+
+```python
+"""Текст, который набирает человек и потом читает глазами."""
+
+import re
+from typing import Annotated
+
+from pydantic import AfterValidator, StringConstraints
+
+# Управляющие символы: NUL и всё, что ниже пробела, плюс DEL.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def no_control_characters(value: str) -> str:
+    """Отвергает управляющие символы. Дороже всего здесь NUL.
+
+    PostgreSQL текст с NUL не принимает вовсе, и без этой проверки он
+    доходит до вставки: asyncpg бросает CharacterNotInRepertoireError, это
+    не IntegrityError, ветка обработки его не ловит — и запрос отвечает
+    пятисоткой. Само по себе плохо, но хуже другое: обработчик пишет
+    `logger.exception`, а трейсбек SQLAlchemy содержит параметры запроса —
+    то есть только что посчитанный хеш пароля новой учётной записи уезжает
+    в лог контура и оттуда в резервные копии. Воспроизведено целиком.
+
+    Прочие управляющие символы не роняют ничего и потому опаснее по-своему:
+    имя «Иван\x1b[31m» заводится молча и красит собой вывод в терминале у
+    того, кто читает логи или выгрузку.
+    """
+    if _CONTROL.search(value):
+        raise ValueError("Недопустимые символы")
+    return value
+
+
+PlainText = Annotated[
+    str,
+    # Обрезка ДО проверки длины: строка из одних пробелов иначе проходит и
+    # ложится в базу пустой, а в списке выглядит сбоем отрисовки.
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+    AfterValidator(no_control_characters),
+]
+```
+
+- [ ] **Шаг 4: Написать `backend/app/features/users/schemas.py`**
 
 ```python
 import uuid
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.users import Login, UserStatus
 from app.domain.roles import Role
+from app.domain.text import PlainText
 
 # Восемь символов — не про стойкость, а про то, чтобы не заводили «123».
 # Настоящую защиту даёт ограничение попыток входа.
@@ -5840,15 +6125,15 @@ class UserOut(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
+    # Лишнее поле — ошибка, а не мусор, который молча выбрасывают. Без этого
+    # `{"login": ..., "status": "disabled"}` отвечает 201 и заводит запись
+    # АКТИВНОЙ: отправитель уверен, что завёл отключённую. Воспроизведено.
+    model_config = ConfigDict(extra="forbid")
+
     # Тот же тип, что и у формы входа: логин хранится в нижнем регистре,
     # иначе `Иван` и `иван` стали бы двумя записями с общим бюджетом попыток.
     login: Login
-    # Обрезка ДО проверки длины. При `Field(min_length=1)` имя из одних
-    # пробелов проходит проверку и ложится в базу пустым — в списке
-    # пользователей такая строка выглядит как сбой отрисовки.
-    name: Annotated[
-        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
-    ]
+    name: PlainText
     role: Role
     password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=1024)
 
@@ -5858,7 +6143,15 @@ class CreateUserRequest(BaseModel):
         # Восьми символов мало, если все они цифры: дата рождения, телефон и
         # «12345678» проходят по длине и подбираются первыми. Запрет ровно
         # тот же, что в app-template-ts, и по той же причине.
-        if value.isdigit():
+        #
+        # Проверяется обрезанное значение, а хранится исходное. Обрезка
+        # только ради проверки: пароль «20260831 » — та же дата, и запрет
+        # обходился одним пробелом в конце. Менять сам пароль нельзя, пробел
+        # в нём — законный символ, и человек набрал именно его.
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Пароль из одних пробелов не годится")
+        if stripped.isdigit():
             raise ValueError("Пароль из одних цифр не годится")
         return value
 
@@ -5866,11 +6159,16 @@ class CreateUserRequest(BaseModel):
 class UpdateUserRequest(BaseModel):
     """Частичное обновление: приходит только то, что меняют."""
 
+    # Без запрета лишнего `{"role": "editor", "name": "Новое"}` отвечает 200,
+    # имя при этом не меняется, и признака того, что половину просьбы
+    # выбросили, нет никакого.
+    model_config = ConfigDict(extra="forbid")
+
     role: Role | None = None
     status: UserStatus | None = None
 ```
 
-- [ ] **Шаг 4: Написать `backend/app/features/users/service.py`**
+- [ ] **Шаг 5: Написать `backend/app/features/users/service.py`**
 
 ```python
 """Правила работы с учётными записями."""
@@ -5884,7 +6182,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.errors import RuleViolation
+from app.core.errors import RecordNotFound, RuleViolation
 from app.core.security import hash_password
 from app.core.users import User, UserStatus
 from app.domain.roles import Role
@@ -5892,7 +6190,12 @@ from app.features.users.schemas import CreateUserRequest, UpdateUserRequest
 
 
 async def list_users(session: AsyncSession) -> list[User]:
-    result = await session.execute(select(User).order_by(User.created_at))
+    # Второй ключ сортировки не украшение: created_at ставится в коде, и две
+    # записи, заведённые в одну миллисекунду, иначе меняются местами от
+    # запроса к запросу. Предела выборки здесь нет намеренно — это экран
+    # «все учётные записи», и показать его частично хуже, чем показать
+    # целиком: в приложении на десятки человек список конечен по существу.
+    result = await session.execute(select(User).order_by(User.created_at, User.id))
     return list(result.scalars().all())
 
 
@@ -5939,9 +6242,38 @@ async def create_user(
         # выглядит поломкой.
         await session.rollback()
         raise RuleViolation(LOGIN_TAKEN, field="login") from clash
-    write_audit(session, actor, "create", "User", str(user.id), payload.role.value)
+    # Логин в записи журнала обязателен. Без него строка выглядит как
+    # «boss | create | User | 01a0…| admin»: кому именно выдали права,
+    # читается только сверкой UUID с живой базой — а журнал обещает быть
+    # читаемым сам по себе и переживать учётную запись.
+    write_audit(
+        session, actor, "create", "User", str(user.id),
+        f"{user.login}, роль {payload.role.value}",
+    )
     await session.commit()
     return user
+
+
+async def active_admins_besides(session: AsyncSession, user_id: uuid.UUID) -> int:
+    """Сколько активных администраторов останется, кроме этого.
+
+    Читает С БЛОКИРОВКОЙ и НЕ исключает самого проверяемого из выборки —
+    оба решения существенны. Два администратора, два одновременных запроса:
+    A снимает права с B, B — с A. Оба прошли require_role до чужого commit,
+    строки разные, конфликта нет — и контур остаётся без единого активного
+    администратора. Воспроизведено; вернуть права после этого можно только
+    прямым доступом к базе.
+
+    Блокировка по одному и тому же набору строк заставляет запросы встать в
+    очередь, а PostgreSQL после снятия блокировки перепроверяет условие: тот,
+    кто пришёл вторым, уже не увидит понижённого первым.
+    """
+    rows = await session.execute(
+        select(User.id)
+        .where(User.role == Role.admin, User.status == UserStatus.active)
+        .with_for_update()
+    )
+    return len([row for row in rows.scalars().all() if row != user_id])
 
 
 async def update_user(
@@ -5953,7 +6285,24 @@ async def update_user(
 ) -> User:
     user = await session.get(User, user_id)
     if user is None:
-        raise LookupError("Учётная запись не найдена")
+        raise RecordNotFound("Учётная запись не найдена")
+
+    # Пустое тело — не то же самое, что повтор уже применённого изменения.
+    # Первое означает, что запрос собран неверно; второе — двойной клик или
+    # повтор после обрыва связи, и красное на него человек видеть не должен.
+    if not payload.model_fields_set:
+        raise RuleViolation("Менять нечего")
+
+    losing_admin = (
+        user.role is Role.admin
+        and user.status is UserStatus.active
+        and (
+            (payload.role is not None and payload.role is not Role.admin)
+            or payload.status is UserStatus.disabled
+        )
+    )
+    if losing_admin and await active_admins_besides(session, user.id) == 0:
+        raise RuleViolation("Это последний администратор контура")
 
     changes: list[str] = []
     if payload.role is not None and payload.role is not user.role:
@@ -5967,37 +6316,47 @@ async def update_user(
             raise RuleViolation(
                 "Нельзя снять права администратора с самого себя", field="role"
             )
+        # Прежнее значение записывается вместе с новым: «роль → admin» не
+        # отвечает на вопрос, что именно поменялось, а журнал читают спустя
+        # месяцы и без базы под рукой.
+        changes.append(f"роль {user.role.value} → {payload.role.value}")
         user.role = payload.role
-        changes.append(f"роль → {payload.role.value}")
 
     if payload.status is not None and payload.status is not user.status:
         if payload.status is UserStatus.disabled and str(user.id) == actor_id:
             # Отключив себя, администратор запирает контур: включить обратно
             # будет некому.
             raise RuleViolation("Нельзя отключить собственную запись", field="status")
+        changes.append(f"статус {user.status.value} → {payload.status.value}")
         user.status = payload.status
-        changes.append(f"статус → {payload.status.value}")
         if payload.status is UserStatus.disabled:
             # Отключение обязано отзывать уже выданные сессии: подпись куки
             # остаётся верной, и без отзыва человек работает дальше.
             user.sessions_valid_from = datetime.now(UTC)
 
     if not changes:
-        raise RuleViolation("Менять нечего")
+        # Просили то, что уже так. Это не ошибка: повтор запроса обязан быть
+        # безвредным. Записи в журнале при этом нет — записывать нечего.
+        return user
 
     write_audit(
-        session, actor_login, "update", "User", str(user.id), ", ".join(changes)
+        session,
+        actor_login,
+        "update",
+        "User",
+        str(user.id),
+        f"{user.login}: " + ", ".join(changes),
     )
     await session.commit()
     return user
 ```
 
-- [ ] **Шаг 5: Написать `backend/app/features/users/router.py`**
+- [ ] **Шаг 6: Написать `backend/app/features/users/router.py`**
 
 ```python
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 
 from app.core.deps import CurrentUser, SessionDep, require_role
 from app.domain.roles import Role
@@ -6030,12 +6389,13 @@ async def update_user(
     session: SessionDep,
     actor: CurrentUser = AdminDep,
 ) -> UserOut:
-    try:
-        user = await service.update_user(
-            session, user_id, payload, actor.id, actor.login
-        )
-    except LookupError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    # Ни try, ни except: «записи нет» — своё исключение с обработчиком в
+    # core/errors.py. Здесь стоял `except LookupError` с выносом `str(exc)`
+    # наружу, и то и другое оказалось дорого: LookupError — предок KeyError
+    # и IndexError, поэтому любой такой сбой внутри сервиса объявлялся «не
+    # найдено», а текст чужого исключения уезжал клиенту. Воспроизведено на
+    # строке с ролью, которой ещё нет в коде.
+    user = await service.update_user(session, user_id, payload, actor.id, actor.login)
     return UserOut.model_validate(user)
 ```
 
@@ -6044,7 +6404,7 @@ SQLAlchemy. Приведения типов это не даёт: `id` объя�
 потому, что при `id: str` каждый вызов `model_validate` падал бы с «Input
 should be a valid string» — проверено на pydantic 2.13.
 
-- [ ] **Шаг 6: Подключить роутер в `backend/app/main.py`**
+- [ ] **Шаг 7: Подключить роутер в `backend/app/main.py`**
 
 ```python
 from app.features.users.router import router as users_router
@@ -6052,15 +6412,16 @@ from app.features.users.router import router as users_router
 app.include_router(users_router, prefix="/api")
 ```
 
-- [ ] **Шаг 7: Запустить тест**
+- [ ] **Шаг 8: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_users.py -v`
-Expected: PASS, 19 passed
+Expected: PASS, 31 passed
 
-- [ ] **Шаг 8: Коммит**
+- [ ] **Шаг 9: Коммит**
 
 ```bash
-git add backend/app/features/users/ backend/app/main.py backend/tests/api/test_users.py
+git add backend/app/domain/text.py backend/app/features/users/ \
+        backend/app/main.py backend/tests/api/test_users.py
 git commit -m "feat: список, создание и изменение учётных записей"
 ```
 
@@ -6300,9 +6661,11 @@ Expected: FAIL — маршрутов `/api/expenses` ещё нет.
 ```python
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.domain.text import PlainText
 
 # Категории перечислены здесь литералами намеренно. Literal[CATEGORIES] из
 # переменной в рантайме работает, но mypy такой формы не принимает, и под
@@ -6332,14 +6695,13 @@ class ExpenseOut(BaseModel):
 
 
 class CreateExpenseRequest(BaseModel):
+    # Лишнее поле — ошибка, а не мусор, который молча выбрасывают.
+    model_config = ConfigDict(extra="forbid")
+
     # Дата и сумма приходят строками и разбираются доменом: разбор — правило
     # предметной области, и он обязан быть авторитетным на сервере.
     date: str = Field(min_length=1)
-    # Обрезка ДО проверки длины: при `Field(min_length=1)` назначение из
-    # одних пробелов проходит и ложится в базу пустым.
-    title: Annotated[
-        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
-    ]
+    title: PlainText
     category: Category
     amount: str = Field(min_length=1)
 
@@ -6362,7 +6724,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.errors import RuleViolation
+from app.core.errors import RecordNotFound, RuleViolation
 from app.domain.dates import parse_date_input_value
 from app.domain.expenses import CategoryTotal, totals_by_category
 from app.domain.money import MAX_AMOUNT_MINOR, format_money, parse_money_to_minor
@@ -6428,7 +6790,7 @@ async def delete_expense(
 ) -> None:
     expense = await session.get(Expense, expense_id)
     if expense is None:
-        raise LookupError("Расход не найден")
+        raise RecordNotFound("Расход не найден")
     write_audit(session, actor, "delete", "Expense", str(expense.id), expense.title)
     await session.delete(expense)
     await session.commit()
@@ -6439,7 +6801,7 @@ async def delete_expense(
 ```python
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 
 from app.core.deps import CurrentUser, SessionDep, require_role
 from app.domain.roles import Role
@@ -6486,10 +6848,10 @@ async def create_expense(
 async def delete_expense(
     expense_id: uuid.UUID, session: SessionDep, actor: CurrentUser = EditorDep
 ) -> dict[str, bool]:
-    try:
-        await service.delete_expense(session, expense_id, actor.login)
-    except LookupError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    # Без try: «расхода нет» — своё исключение с обработчиком в
+    # core/errors.py. `except LookupError` ловил бы заодно KeyError и
+    # IndexError изнутри сервиса и объявлял их отсутствием записи.
+    await service.delete_expense(session, expense_id, actor.login)
     return {"ok": True}
 ```
 
