@@ -7582,7 +7582,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: apptemplate_test
+          POSTGRES_DB: apptemplate_dev
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres"
@@ -7592,13 +7592,27 @@ jobs:
     # Переменные заданы на весь job: app.core.config разбирает окружение при
     # импорте, а такой импорт однажды окажется в цепочке любого теста.
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/apptemplate_test
-      DATABASE_URL_E2E: postgresql://postgres:postgres@localhost:5432/apptemplate_test
+      # Две РАЗНЫЕ базы, а не одна на обе переменные. Обвязка тестов
+      # отказывается работать при совпадении адресов намеренно: она
+      # сбрасывает схему целиком, и совпадение однажды стоило схемы рабочей
+      # базы. Один адрес в обеих переменных ронял бы каждый прогон CI на
+      # сборе тестов, ещё до первой проверки.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/apptemplate_dev
+      DATABASE_URL_E2E: postgresql://postgres:postgres@localhost:5432/apptemplate_e2e
       APP_ENV: local
       APP_AUTH_SECRET: ci-build-secret-not-used-anywhere-real
       COOKIE_SECURE: "false"
     steps:
       - uses: actions/checkout@v5
+
+      # Вторая база. Контейнер Postgres заводит только одну — ту, что в
+      # POSTGRES_DB, — а тестам нужны две: прогон pytest сбрасывает схему
+      # целиком, и делать это в базе, на которой проверяются миграции,
+      # нельзя. psql на ubuntu-latest предустановлен.
+      - name: Завести отдельную базу под тесты
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -c 'CREATE DATABASE apptemplate_e2e'
 
       - name: Поставить uv и Python
         uses: astral-sh/setup-uv@v10
@@ -7691,7 +7705,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: apptemplate_test
+          POSTGRES_DB: apptemplate_dev
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres"
@@ -7699,13 +7713,27 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/apptemplate_test
-      DATABASE_URL_E2E: postgresql://postgres:postgres@localhost:5432/apptemplate_test
+      # Две РАЗНЫЕ базы, а не одна на обе переменные. Обвязка тестов
+      # отказывается работать при совпадении адресов намеренно: она
+      # сбрасывает схему целиком, и совпадение однажды стоило схемы рабочей
+      # базы. Один адрес в обеих переменных ронял бы каждый прогон CI на
+      # сборе тестов, ещё до первой проверки.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/apptemplate_dev
+      DATABASE_URL_E2E: postgresql://postgres:postgres@localhost:5432/apptemplate_e2e
       APP_ENV: local
       APP_AUTH_SECRET: e2e-secret-not-used-anywhere-real-000000
       COOKIE_SECURE: "false"
     steps:
       - uses: actions/checkout@v5
+      # Вторая база. Контейнер Postgres заводит только одну — ту, что в
+      # POSTGRES_DB, — а тестам нужны две: прогон pytest сбрасывает схему
+      # целиком, и делать это в базе, на которой проверяются миграции,
+      # нельзя. psql на ubuntu-latest предустановлен.
+      - name: Завести отдельную базу под тесты
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -c 'CREATE DATABASE apptemplate_e2e'
+
       - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.14"
