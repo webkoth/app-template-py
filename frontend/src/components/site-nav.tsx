@@ -41,7 +41,12 @@ export function SiteNav({ user }: { user: CurrentUser }) {
 
   return (
     <header className="border-b border-border">
-      <nav className="mx-auto flex max-w-5xl items-center gap-1 px-4 py-3">
+      {/* overflow-x-auto и w-full: без них шапка на узком экране не
+          переносится и не прокручивается — она распирает документ, и
+          горизонтальная полоса появляется на ВСЕХ страницах приложения,
+          а не только там, где широкая таблица. Замерено: при ширине окна
+          485 px документ уезжал до 651 px. */}
+      <nav className="mx-auto flex w-full max-w-5xl items-center gap-1 overflow-x-auto px-4 py-3">
         {LINKS.filter((link) => hasRank(user.role, link.role)).map((link) => (
           <Link
             key={link.to}

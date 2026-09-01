@@ -3,6 +3,7 @@ import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
+  lazyRouteComponent,
   Outlet,
   redirect,
 } from "@tanstack/react-router"
@@ -10,8 +11,6 @@ import type { QueryClient } from "@tanstack/react-query"
 import { currentUserQuery } from "@/lib/auth"
 import { SiteNav } from "@/components/site-nav"
 import { AuditPage } from "@/routes/audit"
-import { DesignPage } from "@/routes/design"
-import { DocsPage } from "@/routes/docs"
 import { ExpensesPage } from "@/routes/expenses"
 import { HomePage } from "@/routes/home"
 import { LoginPage } from "@/routes/login"
@@ -74,6 +73,24 @@ const page = <TPath extends string>(
   component: () => JSX.Element | null
 ) => createRoute({ getParentRoute: () => privateRoute, path, component })
 
+// Витрина и правила грузятся отдельно от остального. Они тянут за собой
+// recharts и react-markdown — вдвое больше всего прочего вместе взятого
+// (замерено: 572 кБ против 1245 кБ одним куском), а заходят на них редко и
+// не в работе: витрину однажды удаляют целиком, правила читают раз в месяц.
+// Одним куском сборка выходила за порог Vite, и предупреждение печаталось
+// при каждом прогоне — предупреждение, которое видишь всегда, перестают
+// читать вообще.
+const lazyPage = <TPath extends string>(
+  path: TPath,
+  load: () => Promise<Record<string, unknown>>,
+  name: string
+) =>
+  createRoute({
+    getParentRoute: () => privateRoute,
+    path,
+    component: lazyRouteComponent(load as never, name as never),
+  })
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
   privateRoute.addChildren([
@@ -81,8 +98,8 @@ const routeTree = rootRoute.addChildren([
     page("/expenses", ExpensesPage),
     page("/users", UsersPage),
     page("/audit", AuditPage),
-    page("/design", DesignPage),
-    page("/docs", DocsPage),
+    lazyPage("/design", () => import("@/routes/design"), "DesignPage"),
+    lazyPage("/docs", () => import("@/routes/docs"), "DocsPage"),
   ]),
 ])
 

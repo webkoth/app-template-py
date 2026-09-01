@@ -8331,7 +8331,12 @@ export function SiteNav({ user }: { user: CurrentUser }) {
 
   return (
     <header className="border-b border-border">
-      <nav className="mx-auto flex max-w-5xl items-center gap-1 px-4 py-3">
+      {/* overflow-x-auto и w-full: без них шапка на узком экране не
+          переносится и не прокручивается — она распирает документ, и
+          горизонтальная полоса появляется на ВСЕХ страницах приложения,
+          а не только там, где широкая таблица. Замерено: при ширине окна
+          485 px документ уезжал до 651 px. */}
+      <nav className="mx-auto flex w-full max-w-5xl items-center gap-1 overflow-x-auto px-4 py-3">
         {LINKS.filter((link) => hasRank(user.role, link.role)).map((link) => (
           <Link
             key={link.to}
@@ -8380,6 +8385,7 @@ import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
+  lazyRouteComponent,
   Outlet,
   redirect,
 } from "@tanstack/react-router"
@@ -8387,8 +8393,6 @@ import type { QueryClient } from "@tanstack/react-query"
 import { currentUserQuery } from "@/lib/auth"
 import { SiteNav } from "@/components/site-nav"
 import { AuditPage } from "@/routes/audit"
-import { DesignPage } from "@/routes/design"
-import { DocsPage } from "@/routes/docs"
 import { ExpensesPage } from "@/routes/expenses"
 import { HomePage } from "@/routes/home"
 import { LoginPage } from "@/routes/login"
@@ -8451,6 +8455,24 @@ const page = <TPath extends string>(
   component: () => JSX.Element | null
 ) => createRoute({ getParentRoute: () => privateRoute, path, component })
 
+// Витрина и правила грузятся отдельно от остального. Они тянут за собой
+// recharts и react-markdown — вдвое больше всего прочего вместе взятого
+// (замерено: 572 кБ против 1245 кБ одним куском), а заходят на них редко и
+// не в работе: витрину однажды удаляют целиком, правила читают раз в месяц.
+// Одним куском сборка выходила за порог Vite, и предупреждение печаталось
+// при каждом прогоне — предупреждение, которое видишь всегда, перестают
+// читать вообще.
+const lazyPage = <TPath extends string>(
+  path: TPath,
+  load: () => Promise<Record<string, unknown>>,
+  name: string
+) =>
+  createRoute({
+    getParentRoute: () => privateRoute,
+    path,
+    component: lazyRouteComponent(load as never, name as never),
+  })
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
   privateRoute.addChildren([
@@ -8458,8 +8480,8 @@ const routeTree = rootRoute.addChildren([
     page("/expenses", ExpensesPage),
     page("/users", UsersPage),
     page("/audit", AuditPage),
-    page("/design", DesignPage),
-    page("/docs", DocsPage),
+    lazyPage("/design", () => import("@/routes/design"), "DesignPage"),
+    lazyPage("/docs", () => import("@/routes/docs"), "DocsPage"),
   ]),
 ])
 
@@ -10047,29 +10069,48 @@ cp $SRC/app/design/_components/theme-picker.tsx frontend/src/routes/design-parts
 
 ```typescript
 import { PageMain } from "@/components/page-main"
-import { ShowcaseCharts } from "./design-parts/showcase-charts"
-import { ShowcaseData } from "./design-parts/showcase-data"
-import { ShowcaseFeedback } from "./design-parts/showcase-feedback"
-import { ShowcaseForms } from "./design-parts/showcase-forms"
-import { ShowcaseNavigation } from "./design-parts/showcase-navigation"
+import { ChartsShowcase } from "./design-parts/showcase-charts"
+import { DataShowcase } from "./design-parts/showcase-data"
+import { FeedbackShowcase } from "./design-parts/showcase-feedback"
+import { FormsShowcase } from "./design-parts/showcase-forms"
+import { NavigationShowcase } from "./design-parts/showcase-navigation"
+import { Group } from "./design-parts/showcase-section"
 import { ThemePicker } from "./design-parts/theme-picker"
 
 /**
  * Витрина всех установленных компонентов в рабочих состояниях. Удаляется
  * целиком, когда шаблон стал приложением и оформление выбрано; lib/design
  * при этом остаётся — команда npm run theme работает и без витрины.
+ *
+ * Живёт отдельно от «/» намеренно. Стартовая отвечает на вопросы «что это»
+ * и «как начать» — витрина на ней вытесняла ответы вниз, а нужна она не
+ * каждый день, а когда строят экран или выбирают оформление.
  */
 export function DesignPage() {
   return (
-    <PageMain className="max-w-6xl">
+    <PageMain>
       <h1 className="text-3xl font-semibold">Дизайн</h1>
-      <div className="mt-8 space-y-12">
-        <ThemePicker />
-        <ShowcaseForms />
-        <ShowcaseData />
-        <ShowcaseFeedback />
-        <ShowcaseNavigation />
-        <ShowcaseCharts />
+      <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+        Те же компоненты, из которых собраны разделы приложения, в рабочих
+        состояниях — включая пустые списки, ошибки и загрузку. Новые экраны
+        выглядят так же: это не отдельная витринная вёрстка.
+      </p>
+      <div className="mt-10 flex flex-col gap-16">
+        {/* Примерка тем — такая же секция витрины, как остальные, и
+            заголовок ей нужен по той же причине: без него пять цветных
+            карточек висят над «Ввод и формы» без объяснения, что это
+            вообще и почему после обновления страницы пропадёт. */}
+        <Group
+          title="Оформление"
+          note="Пять готовых тем. Примерка идёт живьём и ничего не сохраняет: обнови страницу — вернётся тема проекта. Выбранная тема вписывается в стили командой npm run theme и уезжает на контур одна."
+        >
+          <ThemePicker />
+        </Group>
+        <FormsShowcase />
+        <DataShowcase />
+        <FeedbackShowcase />
+        <NavigationShowcase />
+        <ChartsShowcase />
       </div>
     </PageMain>
   )
@@ -10085,34 +10126,138 @@ cd frontend && npm install react-markdown remark-gfm
 ```typescript
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { cn } from "@/lib/utils"
+
+/**
+ * Свойства тега без служебного node.
+ *
+ * node — узел разобранного дерева; react-markdown кладёт его в props
+ * КАЖДОГО заменённого тега. При `{...props}` он уезжает на настоящий тег
+ * DOM, и React пишет в консоль предупреждение о нераспознанном свойстве на
+ * каждый заголовок, абзац и ячейку таблицы. Консоль, полная предупреждений,
+ * перестаёт быть местом, где видно настоящую ошибку.
+ *
+ * Снимается здесь, а не в каждой из замен ниже: одиннадцать одинаковых
+ * разборов props — это одиннадцать мест, где однажды забудут.
+ */
+function withoutNode<P extends object>(props: P): Omit<P, "node"> {
+  const { node: _node, ...rest } = props as P & { node?: unknown }
+  return rest
+}
 
 /**
  * Показ markdown из репозитория. Содержимое приходит с бэкенда и написано
  * нами же, но react-markdown по умолчанию не пропускает сырой HTML — и
  * плагин, который это включает, здесь не ставится намеренно.
+ *
+ * Теги подменяются поимённо, а не классом на обёртке: плагина типографики
+ * в проекте нет, и без подмены документ показывался бы браузерным
+ * умолчанием — Times New Roman посреди приложения на Inter.
+ *
+ * Порядок в каждой замене один и тот же: сначала {...props}, потом
+ * className через cn. Наоборот — а именно так это и было написано
+ * сначала — свой класс проигрывает пришедшему из разметки: у блока
+ * ```bash react-markdown ставит на <code> класс language-bash, он
+ * затирал оформление целиком, и код в блоке выходил простым текстом.
  */
 export function MarkdownView({ content }: { content: string }) {
   return (
-    <div className="prose-sm max-w-none space-y-4 text-sm leading-relaxed">
+    <div className="space-y-4 text-sm leading-relaxed">
       <Markdown
         remarkPlugins={[remarkGfm]}
         components={{
-          h1: (props) => <h1 className="mt-8 text-2xl font-semibold" {...props} />,
-          h2: (props) => <h2 className="mt-8 text-xl font-semibold" {...props} />,
-          h3: (props) => <h3 className="mt-6 text-lg font-medium" {...props} />,
-          p: (props) => <p className="text-muted-foreground" {...props} />,
-          ul: (props) => <ul className="list-disc space-y-1 pl-6" {...props} />,
-          ol: (props) => <ol className="list-decimal space-y-1 pl-6" {...props} />,
+          h1: (props) => (
+            <h1
+              {...withoutNode(props)}
+              className={cn("mt-8 text-2xl font-semibold", props.className)}
+            />
+          ),
+          h2: (props) => (
+            <h2
+              {...withoutNode(props)}
+              className={cn("mt-8 text-xl font-semibold", props.className)}
+            />
+          ),
+          h3: (props) => (
+            <h3
+              {...withoutNode(props)}
+              className={cn("mt-6 text-lg font-medium", props.className)}
+            />
+          ),
+          p: (props) => (
+            <p
+              {...withoutNode(props)}
+              className={cn("text-muted-foreground", props.className)}
+            />
+          ),
+          a: (props) => (
+            <a
+              {...withoutNode(props)}
+              className={cn(
+                "text-foreground underline underline-offset-2",
+                props.className
+              )}
+            />
+          ),
+          ul: (props) => (
+            <ul
+              {...withoutNode(props)}
+              className={cn("list-disc space-y-1 pl-6", props.className)}
+            />
+          ),
+          ol: (props) => (
+            <ol
+              {...withoutNode(props)}
+              className={cn("list-decimal space-y-1 pl-6", props.className)}
+            />
+          ),
+          blockquote: (props) => (
+            <blockquote
+              {...withoutNode(props)}
+              className={cn("border-l-2 border-border pl-4", props.className)}
+            />
+          ),
+          // Блок кода: рамка и прокрутка — на <pre>, а вложенному <code>
+          // фон и отступы снимаются. Иначе плашка встроенного кода
+          // повторяется внутри плашки блока — рамка в рамке.
+          pre: (props) => (
+            <pre
+              {...withoutNode(props)}
+              className={cn(
+                "overflow-x-auto rounded-md bg-muted p-3 text-xs [&_code]:bg-transparent [&_code]:p-0",
+                props.className
+              )}
+            />
+          ),
           code: (props) => (
-            <code className="bg-muted rounded px-1.5 py-0.5 text-xs" {...props} />
+            <code
+              {...withoutNode(props)}
+              className={cn(
+                "rounded bg-muted px-1.5 py-0.5 text-xs",
+                props.className
+              )}
+            />
           ),
           table: (props) => (
             <div className="overflow-x-auto">
-              <table className="w-full text-left" {...props} />
+              <table
+                {...withoutNode(props)}
+                className={cn("w-full text-left", props.className)}
+              />
             </div>
           ),
-          th: (props) => <th className="border-border border-b p-2" {...props} />,
-          td: (props) => <td className="border-border border-b p-2" {...props} />,
+          th: (props) => (
+            <th
+              {...withoutNode(props)}
+              className={cn("border-b border-border p-2", props.className)}
+            />
+          ),
+          td: (props) => (
+            <td
+              {...withoutNode(props)}
+              className={cn("border-b border-border p-2", props.className)}
+            />
+          ),
         }}
       >
         {content}
@@ -10127,12 +10272,17 @@ export function MarkdownView({ content }: { content: string }) {
 ```typescript
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { api } from "@/api/client"
+import { api, unwrap } from "@/api/client"
 import { MarkdownView } from "@/components/markdown-view"
 import { PageMain } from "@/components/page-main"
+import { RequestFailure } from "@/components/request-failure"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
+// Имена — те же, что в разрешённом списке бэкенда (DOCUMENTS в
+// features/meta/router.py). Сверять их глазами не нужно: имя уезжает в путь
+// запроса, а тип пути сгенерирован из схемы. Проверено зондом — строка
+// { name: "выдуманное" } в этом списке роняет tsc на вызове api.GET.
 const DOCUMENTS = [
   { name: "agents", label: "Правила" },
   { name: "checklist", label: "Что умеет" },
@@ -10148,41 +10298,60 @@ type DocumentName = (typeof DOCUMENTS)[number]["name"]
 export function DocsPage() {
   const [current, setCurrent] = useState<DocumentName>("agents")
 
-  const document = useQuery({
+  // Переменная зовётся doc, а не document: имя document занято глобальным
+  // объектом страницы, и внутри компонента оно бы его перекрыло — код,
+  // который дальше захочет настоящий document, молча получит ответ запроса.
+  const doc = useQuery({
     queryKey: ["docs", current],
-    queryFn: async () => {
-      const { data } = await api.GET("/api/meta/docs/{name}", {
-        params: { path: { name: current } },
-      })
-      return data ?? null
-    },
+    // unwrap, а не `.data ?? null`: отказ иначе неотличим от пустого
+    // документа. Документы тут не косметика — это правила, по которым
+    // пишут код, и «правил нет» вместо «сервер не отдал» читается как
+    // разрешение.
+    queryFn: async () =>
+      unwrap(
+        await api.GET("/api/meta/docs/{name}", {
+          params: { path: { name: current } },
+        })
+      ),
   })
 
   return (
     <PageMain>
       <h1 className="text-3xl font-semibold">Правила и команды</h1>
+      <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+        Файлы репозитория, прочитанные с диска: те же самые, что читает агент.
+        Это не копия и не пересказ — расходиться им негде.
+      </p>
+      {/* overflow-x-auto: семь вкладок в строку не помещаются на узком
+          экране, и без прокрутки последние («Логи», «Откат») оказывались за
+          краем страницы — нажать их было нечем. overflow-y-hidden рядом
+          обязателен: браузер, увидев прокрутку по одной оси, включает
+          автоматическую и по второй, и рядом с полосой прокрутки внизу
+          появлялась ещё одна, вертикальная, на высоту в один пиксель. */}
       <Tabs
         value={current}
         onValueChange={(v) => setCurrent(v as DocumentName)}
-        className="mt-6"
+        className="mt-6 overflow-x-auto overflow-y-hidden"
       >
         <TabsList>
-          {DOCUMENTS.map((doc) => (
-            <TabsTrigger key={doc.name} value={doc.name}>
-              {doc.label}
+          {DOCUMENTS.map((item) => (
+            <TabsTrigger key={item.name} value={item.name}>
+              {item.label}
             </TabsTrigger>
           ))}
         </TabsList>
       </Tabs>
       <div className="mt-8">
-        {document.isPending ? (
+        {doc.isPending ? (
           <div className="space-y-3">
             <Skeleton className="h-4 w-2/3" />
             <Skeleton className="h-4 w-full" />
             <Skeleton className="h-4 w-5/6" />
           </div>
+        ) : doc.isError ? (
+          <RequestFailure error={doc.error} />
         ) : (
-          <MarkdownView content={document.data?.content ?? "Документ недоступен."} />
+          <MarkdownView content={doc.data.content} />
         )}
       </div>
     </PageMain>
