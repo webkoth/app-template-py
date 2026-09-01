@@ -796,6 +796,11 @@ Run: `make check`
 Expected: ruff, mypy, lint-imports и pytest зелёные (13 тестов), затем
 строка «фронтенд не установлен, его проверки пропущены».
 
+Признак пропуска (`frontend/node_modules`) держится до задачи 23 и там
+меняется: каталог зависимостей появляется раньше, чем сгенерированные типы
+клиента и первые тесты, и по нему ворота открывались бы на две задачи раньше
+времени. Подробности и новая цель — в шаге 1 задачи 23.
+
 - [ ] **Шаг 3: Проверить, что защиты срабатывают**
 
 ```bash
@@ -5212,7 +5217,7 @@ git commit -m "feat: образцовая фича расходов"
 **Files:**
 - Create: `backend/app/features/audit/router.py`
 - Create: `backend/app/core/static.py`
-- Create: `backend/app/main.py`
+- Modify: `backend/app/main.py`
 - Create: `backend/app/openapi.py`
 - Create: `backend/tests/api/test_audit.py`
 
@@ -5493,8 +5498,45 @@ git commit -m "feat: журнал аудита, раздача статики и
 - Modify: `frontend/tsconfig.json`, `frontend/tsconfig.app.json`
 - Create: `frontend/src/index.css`
 - Create: `frontend/components.json`
+- Modify: `Makefile` — признак включения фронтенд-проверок
 
-- [ ] **Шаг 1: Развернуть проект Vite**
+- [ ] **Шаг 1: Переключить ворота фронтенд-проверок в `Makefile`**
+
+Сейчас `make check` включает фронтенд-проверки по наличию
+`frontend/node_modules`. Этой задачей каталог появляется — и ворота
+открываются раньше, чем за ними есть что проверять: `check-openapi`
+сравнивает `frontend/src/api/schema.d.ts`, которого нет до задачи 24, а
+`npm run test` зовёт скрипт, которого нет до неё же, и первых тестов, которых
+нет до задачи 25. Ветка была бы красной две задачи подряд, а привычка не
+смотреть на красный прогон закрепляется быстрее, чем пишутся две задачи.
+
+Признак меняется на `frontend/vitest.config.ts` — файл появляется в задаче 25,
+последней из тройки, и означает ровно то, что нужно: «фронтенд дособран, его
+тесты настроены». Проверка на `node_modules` при этом не исчезает, а
+превращается в отказ: если тесты настроены, а зависимостей нет, это забытый
+`make install`, и молчать об этом нельзя.
+
+Заменить в `Makefile` цель `check`:
+
+```make
+check: check-backend
+	@if [ -f frontend/vitest.config.ts ]; then \
+		if [ -d frontend/node_modules ]; then \
+			$(MAKE) check-frontend; \
+		else \
+			echo "== фронтенд настроен, но не установлен =="; \
+			echo "   поставить: make install"; \
+			exit 1; \
+		fi; \
+	else \
+		echo "== фронтенд ещё не дособран, его проверки пропущены =="; \
+	fi
+```
+
+Пока ворота закрыты, фронтенд проверяется вручную — в задачах 23 и 24 для
+этого есть отдельные шаги с `npx tsc --noEmit`.
+
+- [ ] **Шаг 2: Развернуть проект Vite**
 
 ```bash
 npm create vite@latest frontend -- --template react-ts
@@ -5503,7 +5545,7 @@ npm install @tailwindcss/vite tailwindcss
 npm install -D @types/node
 ```
 
-- [ ] **Шаг 2: Написать `frontend/vite.config.ts`**
+- [ ] **Шаг 3: Написать `frontend/vite.config.ts`**
 
 ```typescript
 import path from "node:path"
@@ -5532,7 +5574,7 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Шаг 3: Добавить псевдоним пути в `frontend/tsconfig.app.json`**
+- [ ] **Шаг 4: Добавить псевдоним пути в `frontend/tsconfig.app.json`**
 
 В секцию `compilerOptions` дописать:
 
@@ -5541,7 +5583,7 @@ export default defineConfig({
     "paths": { "@/*": ["./src/*"] }
 ```
 
-- [ ] **Шаг 4: Написать `frontend/src/index.css`**
+- [ ] **Шаг 5: Написать `frontend/src/index.css`**
 
 ```css
 @import "tailwindcss";
@@ -5570,7 +5612,7 @@ export default defineConfig({
 Полный блок токенов появится в задаче 25 — его пишет команда применения
 темы, а не рука. Здесь достаточно маркеров, между которыми она пишет.
 
-- [ ] **Шаг 5: Поставить shadcn/ui**
+- [ ] **Шаг 6: Поставить shadcn/ui**
 
 ```bash
 cd frontend && npx shadcn@latest init
@@ -5581,7 +5623,7 @@ cd frontend && npx shadcn@latest init
 стоит `"rsc": false` — серверных компонентов здесь нет, и с `true` CLI
 дописывал бы `"use client"` в каждый компонент.
 
-- [ ] **Шаг 6: Поставить компоненты, которые нужны экранам**
+- [ ] **Шаг 7: Поставить компоненты, которые нужны экранам**
 
 ```bash
 cd frontend && npx shadcn@latest add alert avatar badge button card chart \
@@ -5589,15 +5631,15 @@ cd frontend && npx shadcn@latest add alert avatar badge button card chart \
   separator skeleton switch table tabs textarea tooltip
 ```
 
-- [ ] **Шаг 7: Проверить, что проект собирается**
+- [ ] **Шаг 8: Проверить, что проект собирается**
 
 Run: `cd frontend && npx tsc --noEmit && npm run build`
 Expected: сборка проходит, появляется `frontend/dist/`.
 
-- [ ] **Шаг 8: Коммит**
+- [ ] **Шаг 9: Коммит**
 
 ```bash
-git add frontend/
+git add frontend/ Makefile
 git commit -m "chore: каркас SPA на Vite с Tailwind и shadcn/ui"
 ```
 
@@ -5764,7 +5806,18 @@ cd frontend && npm run test && npm run theme -- blue
 Expected: тесты зелёные; в `src/index.css` между маркерами появляется полный
 набор токенов синей темы.
 
-- [ ] **Шаг 5: Коммит**
+Этим шагом фронтенд дособран. `frontend/vitest.config.ts` — тот самый
+признак, по которому `make check` включает фронтенд-проверки (шаг 1 задачи
+23), так что с этого момента ворота открыты и красное на ветке снова видно
+сразу.
+
+- [ ] **Шаг 5: Прогнать полную проверку**
+
+Run: `make check`
+Expected: зелёные и бэкенд, и фронтенд — строки про пропуск фронтенда больше
+нет.
+
+- [ ] **Шаг 6: Коммит**
 
 ```bash
 git add frontend/src/lib/design/ frontend/scripts/ frontend/vitest.config.ts frontend/src/index.css
