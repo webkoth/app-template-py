@@ -2569,7 +2569,7 @@ def verify_session_token(
 - [ ] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_token.py -v`
-Expected: PASS, 11 passed
+Expected: PASS, 12 passed
 
 - [ ] **Шаг 5: Коммит**
 
@@ -4103,7 +4103,7 @@ async def test_denial_is_not_faster_than_the_floor(new_session):
     assert time.monotonic() - started >= 0.25
 
 
-async def test_denial_gives_the_connection_back_before_it_waits():
+async def test_denial_gives_the_connection_back_before_it_waits(monkeypatch):
     """Выравнивание времени не должно держать соединение пула.
 
     Замерено на прежнем варианте с пулом приложения (5 плюс 5 сверху): сорок
@@ -4113,34 +4113,66 @@ async def test_denial_gives_the_connection_back_before_it_waits():
     дальше начинался pool_timeout. После возврата соединения перед сном тот
     же замер даёт 1–15 мс.
 
-    Пул здесь на одно соединение намеренно: «держит» и «не держит»
-    отличаются тогда не долями миллисекунды, а всей границей выравнивания, и
-    проверка не зависит от загрузки машины.
+    Проверяется состояние пула, а не секундомер. Первая редакция требовала
+    «посторонний запрос ждал меньше 100 мс» — и падала на исправном коде:
+    под нагрузкой одно только получение соединения занимает 380–460 мс.
+    Воспроизведено на двадцати четырёх фоновых процессах. Разбор показал, что
+    и без нагрузки замер мерил не то: соединение держал не сон, а установка
+    первого соединения и сам SELECT — около 300 мс. Случайный красный в CI
+    дороже отсутствующего теста: он приучает перезапускать прогон, не читая.
+
+    Формулировка без времени: соединение обязано вернуться в пул ДО того,
+    как отказ завершится. Держи его сон — «занято» держалось бы до самого
+    конца задачи, и разницы между «отпустил» и «закончил» не было бы.
     """
-    from app.features.auth.service import authenticate
+    from app.features.auth import service
+
+    # Окно растянуто, чтобы промежуток «отпустил, но ещё не закончил» был
+    # заведомо шире шага опроса на любой машине.
+    monkeypatch.setattr(service, "MIN_RESPONSE_SECONDS", 2.0)
 
     engine = create_async_engine(
         settings.async_database_url_e2e, pool_size=1, max_overflow=0
     )
     try:
+        # Соединение устанавливается заранее. Иначе первым делом отказ платит
+        # за установку — сотни миллисекунд, в которые он законно держит
+        # соединение, — и наблюдение спутало бы её с удержанием на время сна.
+        async with AsyncSession(bind=engine) as warmup:
+            await warmup.execute(text("select 1"))
 
         async def denial() -> None:
             async with AsyncSession(bind=engine) as db:
                 with pytest.raises(RuleViolation):
-                    await authenticate(db, "призрак", "мимо", "10.0.0.3")
+                    await service.authenticate(db, "призрак", "мимо", "10.0.0.3")
 
         attempt = asyncio.create_task(denial())
-        # Дать отказу дойти до сна: SELECT сделан, выравнивание началось.
-        await asyncio.sleep(0.05)
-        started = time.monotonic()
-        async with AsyncSession(bind=engine) as db:
-            await db.execute(text("select 1"))
-        waited = time.monotonic() - started
+
+        async def wait_until(busy: bool) -> None:
+            for _ in range(1000):
+                if engine.pool.checkedout() == (1 if busy else 0):
+                    return
+                if attempt.done():
+                    break
+                await asyncio.sleep(0.01)
+            await attempt
+            raise AssertionError(
+                "соединение так и не "
+                + ("занялось" if busy else "вернулось в пул")
+                + " — проверять нечего"
+            )
+
+        await wait_until(busy=True)
+        await wait_until(busy=False)
+        released_before_the_end = not attempt.done()
         await attempt
     finally:
         await engine.dispose()
 
-    assert waited < 0.1, f"посторонний запрос ждал соединения {waited * 1000:.0f} мс"
+    assert released_before_the_end, (
+        "соединение вернулось в пул только вместе с завершением отказа — "
+        "значит выравнивание времени держало его всё ожидание"
+    )
 
 
 class _SlowDatabase:
@@ -4954,7 +4986,24 @@ async def test_known_name_without_file_is_404(client, login_as, monkeypatch, tmp
 
 
 @pytest.mark.parametrize(
-    "name", ["../../.env", "..%2F..%2F.env", "secrets", "agents/../../.env"]
+    "name",
+    [
+        # Первым — единственное имя, которое различает реализации. Остальные
+        # четыре отвергаются по посторонним причинам: `../` схлопывает сам
+        # клиент ещё до запроса, имя со слэшем не подходит под сегмент пути,
+        # а `secrets` и путь на два уровня вверх просто не существуют на
+        # диске. Проверено мутацией: с именем, склеенным в путь, все четыре
+        # оставались зелёными — то есть охраняли пустое место.
+        #
+        # `.env` лежит в корне репозитория и содержит секрет подписи сессий.
+        # Со списком разрешённых имён он отвергается до входа в обработчик;
+        # со склейкой — читается и уходит в ответ целиком.
+        ".env",
+        "../../.env",
+        "..%2F..%2F.env",
+        "secrets",
+        "agents/../../.env",
+    ],
 )
 async def test_unknown_document_rejected(client, login_as, name):
     # Имя документа не превращается в путь: список разрешённых задан явно.
@@ -4968,7 +5017,7 @@ async def test_unknown_document_rejected(client, login_as, name):
 
 Run: `cd backend && uv run pytest tests/api/test_meta.py`
 Expected: FAIL — маршрутов `/api/health` и `/api/meta/*` ещё нет: все
-одиннадцать проверок падают.
+двенадцать проверок падают.
 
 - [ ] **Шаг 3: Написать `backend/app/features/meta/router.py`**
 
@@ -5090,7 +5139,7 @@ app.include_router(meta_router, prefix="/api")
 - [ ] **Шаг 5: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_meta.py -v`
-Expected: PASS, 11 passed
+Expected: PASS, 12 passed
 
 - [ ] **Шаг 6: Коммит**
 
