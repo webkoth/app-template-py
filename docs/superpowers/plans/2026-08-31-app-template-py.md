@@ -5450,6 +5450,7 @@ git commit -m "feat: образцовая фича расходов"
 - Modify: `backend/app/main.py`
 - Create: `backend/app/openapi.py`
 - Create: `backend/tests/api/test_audit.py`
+- Create: `backend/tests/unit/test_static.py`
 
 - [ ] **Шаг 1: Написать падающий тест**
 
@@ -5488,6 +5489,57 @@ async def test_newest_first(client, login_as):
     rows = (await client.get("/api/audit")).json()
     assert len(rows) == 2
     assert rows[0]["ts"] >= rows[1]["ts"]
+```
+
+Create `backend/tests/unit/test_static.py`:
+
+```python
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.core import static
+
+
+def build(tmp_path: Path, monkeypatch) -> TestClient:
+    # Сборки фронтенда во время прогона бэкенда нет, поэтому раздача
+    # монтируется на подставной каталог. Иначе mount_frontend выходит по
+    # первой же строке, и всё, что ниже, не проверяется вовсе.
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("<!doctype html>окно", encoding="utf-8")
+    monkeypatch.setattr(static, "DIST", tmp_path)
+
+    app = FastAPI()
+
+    @app.get("/api/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    static.mount_frontend(app)
+    return TestClient(app)
+
+
+def test_unknown_path_gets_the_spa(tmp_path, monkeypatch):
+    response = build(tmp_path, monkeypatch).get("/expenses/42")
+    assert response.status_code == 200
+    assert "окно" in response.text
+
+
+def test_unknown_api_route_is_not_html(tmp_path, monkeypatch):
+    # Перехватчик стоит последним и ловит всё, что не разобрали роутеры.
+    # Отдать на несуществующий маршрут API страницу нельзя: клиент ждёт
+    # JSON и покажет «неожиданный ответ» вместо честного 404, а искать
+    # причину будут в клиенте.
+    response = build(tmp_path, monkeypatch).get("/api/нет-такого")
+    assert response.status_code == 404
+    assert "<!doctype" not in response.text.lower()
+
+
+def test_real_api_route_still_answers(tmp_path, monkeypatch):
+    # Обратная сторона: перехватчик не должен съедать живые маршруты.
+    response = build(tmp_path, monkeypatch).get("/api/health")
+    assert response.json() == {"status": "ok"}
 ```
 
 - [ ] **Шаг 2: Написать `backend/app/features/audit/router.py`**
@@ -5548,7 +5600,7 @@ FastAPI отдаёт и API, и статику: так vhost остаётся ч
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -5563,7 +5615,7 @@ def mount_frontend(app: FastAPI) -> None:
     app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
 
     @app.get("/{path:path}", include_in_schema=False)
-    async def spa(request: Request, path: str) -> FileResponse:
+    async def spa(path: str) -> FileResponse:
         # Маршруты SPA не существуют на диске: любой неизвестный путь отдаёт
         # index.html, и дальше решает роутер в браузере.
         #
@@ -5717,7 +5769,7 @@ Expected: `{"status":"ok"}`; вход отвечает 200 и ставит ку�
 ```bash
 git add backend/app/features/audit/ backend/app/core/static.py \
         backend/app/main.py backend/app/openapi.py backend/.importlinter \
-        backend/tests/api/test_audit.py
+        backend/tests/api/test_audit.py backend/tests/unit/test_static.py
 git commit -m "feat: журнал аудита, раздача статики и сборка приложения"
 ```
 
