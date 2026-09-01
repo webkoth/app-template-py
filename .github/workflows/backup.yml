@@ -1,0 +1,31 @@
+name: backup-check
+
+on:
+  schedule:
+    # 07:00 МСК — копия снимается в 03:17, к утру она обязана быть.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Проверить свежесть ночной копии
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          ssh deploy@${{ secrets.SERVER_HOST }} 'bash -s' <<'EOF'
+          set -euo pipefail
+          SLUG=apptemplate
+          LATEST=$(ls -t /home/deploy/backups/$SLUG/*.sql.gz 2>/dev/null | head -1 || true)
+          [ -n "$LATEST" ] || { echo "копий нет вообще"; exit 1; }
+          AGE_H=$(( ( $(date +%s) - $(stat -c %Y "$LATEST") ) / 3600 ))
+          SIZE=$(stat -c %s "$LATEST")
+          echo "последняя копия: $LATEST, ${AGE_H} ч назад, ${SIZE} байт"
+          # Копия старше суток или подозрительно маленькая — это авария:
+          # о ней надо узнать до того, как она понадобится.
+          [ "$AGE_H" -le 26 ] || { echo "копия устарела"; exit 1; }
+          [ "$SIZE" -ge 1024 ] || { echo "копия подозрительно мала"; exit 1; }
+          EOF
