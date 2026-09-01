@@ -7836,6 +7836,15 @@ jobs:
           tar -xzf /tmp/\$SLUG-dist.tar.gz -C "\$DIR" build-info.json
           rm -f /tmp/\$SLUG-dist.tar.gz
 
+          # PATH задаётся явно. `ssh host 'bash -s'` запускает неинтерактивный
+          # и не-логин шелл: он не читает ни .bashrc, ни .profile, и PATH
+          # приходит куцый — /usr/local/bin:/usr/bin:/bin. node, npm и pm2
+          # лежат в нём, потому что стоят системно, а uv ставится в
+          # ~/.local/bin под пользователя deploy, и без этой строки доставка
+          # падает на «uv: command not found» уже после git reset --hard —
+          # то есть на контуре остаётся новый код при старом процессе.
+          export PATH="\$HOME/.local/bin:\$PATH"
+
           cd "\$DIR/backend"
           uv sync --frozen
           uv run alembic upgrade head
@@ -8582,6 +8591,11 @@ ops-скрипты и права `ops`. Для Python-приложения он 
     curl -LsSf https://astral.sh/uv/install.sh | sh
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
     uv --version
+
+Строка в `~/.bashrc` — только для ручной работы на сервере. Доставке она не
+поможет: `ssh host 'bash -s'` поднимает неинтерактивный и не-логин шелл,
+который `.bashrc` не читает. Поэтому PATH задан и в самом скрипте доставки —
+это не дублирование, а два разных случая.
 
 Node на сервере **не нужен**: фронтенд собирается в GitHub Actions и
 приезжает готовой статикой.
