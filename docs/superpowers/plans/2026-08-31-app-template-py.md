@@ -2559,7 +2559,7 @@ def verify_session_token(
 Тест `test_login_with_separator_inside_survives` ожидает `None`: логин с
 переводом строки внутри даёт три части при разборе, и токен отвергается.
 Это правильное поведение — такой логин не должен существовать, и запрет на
-него ставит схема при создании пользователя (задача 19).
+него ставит схема при создании пользователя (задача 18).
 
 - [ ] **Шаг 4: Запустить тест**
 
@@ -3839,191 +3839,26 @@ git commit -m "test: сборка приложения и фикстуры API-�
 
 ---
 
-### Задача 18: Служебная фича meta
-
-**Files:**
-- Create: `backend/app/features/meta/router.py`
-- Create: `backend/tests/api/test_meta.py`
-
-- [ ] **Шаг 1: Написать падающий тест**
-
-Create `backend/tests/api/test_meta.py`:
-
-```python
-import pytest
-
-
-async def test_health_is_open_and_touches_db(client):
-    response = await client.get("/api/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
-
-
-async def test_build_info_is_open(client):
-    response = await client.get("/api/meta/build-info")
-    assert response.status_code == 200
-    assert "commit" in response.json()
-
-
-async def test_docs_requires_login(client):
-    response = await client.get("/api/meta/docs/agents")
-    assert response.status_code == 401
-
-
-async def test_docs_returns_markdown(client, login_as):
-    await login_as()
-    response = await client.get("/api/meta/docs/agents")
-    assert response.status_code == 200
-    assert response.json()["content"]
-
-
-@pytest.mark.parametrize(
-    "name", ["../../.env", "..%2F..%2F.env", "secrets", "agents/../../.env"]
-)
-async def test_unknown_document_rejected(client, login_as, name):
-    # Имя документа не превращается в путь: список разрешённых задан явно.
-    # Иначе первый же ../ отдал бы .env с секретом подписи наружу.
-    await login_as()
-    response = await client.get(f"/api/meta/docs/{name}")
-    assert response.status_code in (404, 400)
-```
-
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
-
-Run: `cd backend && uv run pytest tests/api/test_meta.py`
-Expected: FAIL — приложение ещё не собрано (`app.main` появится в задаче 22),
-либо 404 на всех маршрутах.
-
-- [ ] **Шаг 3: Написать `backend/app/features/meta/router.py`**
-
-```python
-"""Служебные маршруты: живость, версия сборки, тексты правил для /docs."""
-
-import json
-from pathlib import Path
-from typing import Literal
-
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
-from sqlalchemy import text
-
-from app.core.deps import CurrentUserDep, SessionDep
-
-router = APIRouter(tags=["meta"])
-
-# Корень репозитория: app/features/meta/router.py → четыре уровня вверх.
-REPO_ROOT = Path(__file__).resolve().parents[4]
-
-# Список разрешённых документов задан явно, а имя НЕ превращается в путь.
-# Любая склейка вида REPO_ROOT / name отдала бы .env с секретом подписи по
-# первому же ../ в запросе.
-DOCUMENTS: dict[str, Path] = {
-    "agents": REPO_ROOT / "AGENTS.md",
-    "checklist": REPO_ROOT / "CHECKLIST.md",
-    "onboarding": REPO_ROOT / "docs" / "commands" / "onboarding.md",
-    "ship": REPO_ROOT / "docs" / "commands" / "ship.md",
-    "status": REPO_ROOT / "docs" / "commands" / "status.md",
-    "logs": REPO_ROOT / "docs" / "commands" / "logs.md",
-    "rollback": REPO_ROOT / "docs" / "commands" / "rollback.md",
-}
-
-DocumentName = Literal[
-    "agents", "checklist", "onboarding", "ship", "status", "logs", "rollback"
-]
-
-
-class Health(BaseModel):
-    status: Literal["ok"]
-
-
-class BuildInfo(BaseModel):
-    commit: str
-    built_at: str
-
-
-class Document(BaseModel):
-    name: str
-    content: str
-
-
-@router.get("/health", response_model=Health)
-async def health(session: SessionDep) -> Health:
-    """Единственный маршрут без авторизации.
-
-    Ходит в базу намеренно: проверка, которая отвечает 200 при недоступной
-    базе, подтверждает только то, что процесс жив, — а доставка на основании
-    такой проверки объявляет успешной заведомо нерабочий контур.
-    """
-    await session.execute(text("SELECT 1"))
-    return Health(status="ok")
-
-
-@router.get("/meta/build-info", response_model=BuildInfo)
-async def build_info() -> BuildInfo:
-    """Версия доставленного кода. Пишется при сборке, читается с диска."""
-    marker = REPO_ROOT / "build-info.json"
-    if not marker.exists():
-        return BuildInfo(commit="dev", built_at="")
-    data = json.loads(marker.read_text(encoding="utf-8"))
-    return BuildInfo(commit=data.get("commit", "dev"), built_at=data.get("built_at", ""))
-
-
-@router.get("/meta/docs/{name}", response_model=Document)
-async def document(name: DocumentName, user: CurrentUserDep) -> Document:
-    """Отдаёт текст правил или команды. Читает файлы репозитория с диска."""
-    path = DOCUMENTS[name]
-    if not path.exists():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Документ не найден")
-    return Document(name=name, content=path.read_text(encoding="utf-8"))
-```
-
-`DocumentName` как `Literal` даёт две вещи разом: FastAPI сам отвергает
-неизвестное имя до входа в обработчик, и это же имя попадает в OpenAPI, а
-оттуда — в типы клиента. Опечатка в имени документа на фронтенде станет
-ошибкой `tsc`.
-
-- [ ] **Шаг 4: Подключить роутер в `backend/app/main.py`**
-
-```python
-from app.features.meta.router import router as meta_router
-
-app.include_router(meta_router, prefix="/api")
-```
-
-Импорт — в шапку, вызов — после `register_error_handlers`.
-
-- [ ] **Шаг 5: Запустить тест**
-
-Run: `cd backend && uv run pytest tests/api/test_meta.py -v`
-Expected: PASS, 8 passed
-
-- [ ] **Шаг 6: Коммит**
-
-```bash
-git add backend/app/features/meta/router.py backend/app/main.py \
-        backend/tests/api/test_meta.py
-git commit -m "feat: служебные маршруты health, build-info и документы"
-```
-
----
-
-### Задача 19: Вход
+### Задача 18: Вход
 
 **Files:**
 - Create: `backend/app/features/auth/schemas.py`
 - Create: `backend/app/features/auth/service.py`
 - Create: `backend/app/features/auth/router.py`
 - Create: `backend/tests/api/test_auth.py`
+- Modify: `backend/tests/conftest.py` — фикстура `new_session`
 
 - [ ] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_auth.py`:
 
 ```python
+import asyncio
 from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from app.core.errors import RuleViolation
 from app.core.security import AUTH_COOKIE
 from app.domain.roles import Role
 from app.core.users import User, UserStatus
@@ -4098,32 +3933,62 @@ async def test_logout_clears_cookie(client, login_as):
     assert (await client.get("/api/auth/me")).status_code == 401
 
 
-async def test_budget_is_taken_before_password_check(client, make_user):
+async def test_budget_is_taken_before_password_check(new_session):
     # Порядок вызовов, а не их наличие. Между проверкой бюджета и записью
     # неудачи стоит await на scrypt, и при обратном порядке цикл событий
-    # пропускает в ворота все ждущие запросы разом: сорок одновременных
-    # попыток дают сорок проверок пароля при пределе пять.
+    # пропускает в ворота все ждущие запросы разом: десять одновременных
+    # попыток дают десять проверок пароля при пределе пять.
     #
-    # Проверяется тем, что после единственной неудачной попытки счётчик уже
-    # не пуст — то есть неудача записана, а не ждёт исхода проверки.
-    from app.core.rate_limit import login_limiter
+    # Отличить порядок можно ТОЛЬКО одновременностью. Одиночная неудачная
+    # попытка записывается в счётчик при любом порядке, поэтому проверка
+    # «после одной попытки счётчик не пуст» о порядке не говорит ничего и
+    # проходит на заведомо дырявом коде.
+    #
+    # Каждому вызову — своя сессия: десять одновременных запросов к одной
+    # AsyncSession дают ошибку SQLAlchemy вместо проверки входа. Логин взят
+    # несуществующий намеренно: ворота стоят до обращения к базе, и вся
+    # разница видна именно на нём.
+    from app.core.rate_limit import address_limiter, login_limiter
+    from app.features.auth.service import DENIED, authenticate
 
-    await make_user(login="ivan")
-    login_limiter.reset("ivan")
-    await client.post("/api/auth/login", json={"login": "ivan", "password": "мимо"})
-    assert login_limiter.size() > 0
+    login = "натиск"
+    address = "10.0.0.1"
+    login_limiter.reset(login)
+    address_limiter.reset(address)
+
+    async def attempt() -> str:
+        async with new_session() as db:
+            try:
+                await authenticate(db, login, "мимо", address)
+            except RuleViolation as denial:
+                return denial.message
+        raise AssertionError("несуществующий логин обязан был получить отказ")
+
+    messages = await asyncio.gather(*(attempt() for _ in range(10)))
+    # Пять попыток дошли до проверки, остальные упёрлись в бюджет. При
+    # обратном порядке до проверки дошли бы все десять.
+    assert messages.count(DENIED) == 5, messages
+    assert all(
+        m.startswith("Слишком много попыток") for m in messages if m != DENIED
+    ), messages
 
 
 async def test_successful_login_clears_counter(client, make_user):
     # Обратная сторона: бюджет занимается до проверки, поэтому успешный
     # вход обязан счётчик обнулить — иначе честный пользователь копил бы
     # отметки на каждом входе и однажды заперся бы сам.
+    #
+    # Отметка сначала ставится неудачной попыткой, и проверяется её
+    # исчезновение. Без этого шага счётчик пуст и до успешного входа, и
+    # после — проверять нечего.
     from app.core.rate_limit import login_limiter
 
     await make_user(login="ivan")
     login_limiter.reset("ivan")
+    await client.post("/api/auth/login", json={"login": "ivan", "password": "мимо"})
+    marked = login_limiter.size()
     await client.post("/api/auth/login", json={"login": "ivan", "password": "секрет"})
-    assert login_limiter.retry_after("ivan") == 0
+    assert login_limiter.size() == marked - 1
 
 
 async def test_login_records_last_login(client, session, make_user):
@@ -4144,6 +4009,27 @@ async def test_revoked_session_stops_working(client, session, login_as):
     await session.commit()
     assert (await client.get("/api/auth/me")).status_code == 401
 ```
+
+Дописать в `backend/tests/conftest.py` фикстуру `new_session` — она нужна
+единственной проверке выше, той, что про одновременность:
+
+```python
+@pytest.fixture
+def new_session() -> Callable[[], AsyncSession]:
+    """Отдельная сессия на отдельном соединении, вне транзакции теста.
+
+    Общая фикстура `session` для проверок одновременности не годится: десять
+    параллельных запросов к одной AsyncSession дают ошибку SQLAlchemy вместо
+    проверки поведения.
+
+    Данные, заведённые `make_user`, такой сессии не видны: они лежат в
+    транзакции, которая не коммитится. Это не изъян, а условие — проверка
+    одновременности работает на несуществующем логине.
+    """
+    return lambda: AsyncSession(bind=test_engine)
+```
+
+`Callable` добавляется в импорт из `collections.abc`.
 
 - [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
 
@@ -4408,8 +4294,197 @@ Expected: PASS, 12 passed
 - [ ] **Шаг 8: Коммит**
 
 ```bash
-git add backend/app/features/auth/ backend/app/main.py backend/tests/api/test_auth.py
+git add backend/app/features/auth/ backend/app/main.py \
+        backend/tests/api/test_auth.py backend/tests/conftest.py
 git commit -m "feat: вход, выход и текущий пользователь"
+```
+
+---
+
+### Задача 19: Служебная фича meta
+
+**Files:**
+- Create: `backend/app/features/meta/router.py`
+- Create: `backend/tests/api/test_meta.py`
+
+- [ ] **Шаг 1: Написать падающий тест**
+
+Create `backend/tests/api/test_meta.py`:
+
+```python
+import pytest
+
+from app.features.meta import router as meta
+
+
+async def test_health_is_open_and_touches_db(client):
+    response = await client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+async def test_build_info_is_open(client):
+    response = await client.get("/api/meta/build-info")
+    assert response.status_code == 200
+    assert "commit" in response.json()
+
+
+async def test_docs_requires_login(client):
+    response = await client.get("/api/meta/docs/agents")
+    assert response.status_code == 401
+
+
+async def test_docs_returns_markdown(client, login_as, monkeypatch, tmp_path):
+    # Файл подставляется временный. Настоящие AGENTS.md и docs/commands/*
+    # появляются в задачах 38–39, а чтение документа проверяется здесь — и
+    # проверка не должна зависеть от того, что лежит в репозитории сегодня:
+    # тест на содержимое чужого файла ломается при первой же его правке и
+    # при этом ничего не говорит об этом обработчике.
+    document = tmp_path / "AGENTS.md"
+    document.write_text("# Правила\n", encoding="utf-8")
+    monkeypatch.setitem(meta.DOCUMENTS, "agents", document)
+    await login_as()
+    response = await client.get("/api/meta/docs/agents")
+    assert response.status_code == 200
+    assert response.json()["content"] == "# Правила\n"
+
+
+async def test_known_name_without_file_is_404(client, login_as, monkeypatch, tmp_path):
+    # Имя из списка разрешённых есть, а файла на диске нет: так выглядит
+    # документ, который ещё не написан или переименован. Ответ — 404, а не
+    # пятисотка от чтения несуществующего пути.
+    monkeypatch.setitem(meta.DOCUMENTS, "agents", tmp_path / "нет-такого.md")
+    await login_as()
+    response = await client.get("/api/meta/docs/agents")
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "name", ["../../.env", "..%2F..%2F.env", "secrets", "agents/../../.env"]
+)
+async def test_unknown_document_rejected(client, login_as, name):
+    # Имя документа не превращается в путь: список разрешённых задан явно.
+    # Иначе первый же ../ отдал бы .env с секретом подписи наружу.
+    await login_as()
+    response = await client.get(f"/api/meta/docs/{name}")
+    assert response.status_code in (404, 400)
+```
+
+- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+
+Run: `cd backend && uv run pytest tests/api/test_meta.py`
+Expected: FAIL — маршрутов `/api/health` и `/api/meta/*` ещё нет: все
+девять проверок падают на 404.
+
+- [ ] **Шаг 3: Написать `backend/app/features/meta/router.py`**
+
+```python
+"""Служебные маршруты: живость, версия сборки, тексты правил для /docs."""
+
+import json
+from pathlib import Path
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel
+from sqlalchemy import text
+
+from app.core.deps import CurrentUserDep, SessionDep
+
+router = APIRouter(tags=["meta"])
+
+# Корень репозитория: app/features/meta/router.py → четыре уровня вверх.
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+# Список разрешённых документов задан явно, а имя НЕ превращается в путь.
+# Любая склейка вида REPO_ROOT / name отдала бы .env с секретом подписи по
+# первому же ../ в запросе.
+DOCUMENTS: dict[str, Path] = {
+    "agents": REPO_ROOT / "AGENTS.md",
+    "checklist": REPO_ROOT / "CHECKLIST.md",
+    "onboarding": REPO_ROOT / "docs" / "commands" / "onboarding.md",
+    "ship": REPO_ROOT / "docs" / "commands" / "ship.md",
+    "status": REPO_ROOT / "docs" / "commands" / "status.md",
+    "logs": REPO_ROOT / "docs" / "commands" / "logs.md",
+    "rollback": REPO_ROOT / "docs" / "commands" / "rollback.md",
+}
+
+DocumentName = Literal[
+    "agents", "checklist", "onboarding", "ship", "status", "logs", "rollback"
+]
+
+
+class Health(BaseModel):
+    status: Literal["ok"]
+
+
+class BuildInfo(BaseModel):
+    commit: str
+    built_at: str
+
+
+class Document(BaseModel):
+    name: str
+    content: str
+
+
+@router.get("/health", response_model=Health)
+async def health(session: SessionDep) -> Health:
+    """Единственный маршрут без авторизации.
+
+    Ходит в базу намеренно: проверка, которая отвечает 200 при недоступной
+    базе, подтверждает только то, что процесс жив, — а доставка на основании
+    такой проверки объявляет успешной заведомо нерабочий контур.
+    """
+    await session.execute(text("SELECT 1"))
+    return Health(status="ok")
+
+
+@router.get("/meta/build-info", response_model=BuildInfo)
+async def build_info() -> BuildInfo:
+    """Версия доставленного кода. Пишется при сборке, читается с диска."""
+    marker = REPO_ROOT / "build-info.json"
+    if not marker.exists():
+        return BuildInfo(commit="dev", built_at="")
+    data = json.loads(marker.read_text(encoding="utf-8"))
+    return BuildInfo(commit=data.get("commit", "dev"), built_at=data.get("built_at", ""))
+
+
+@router.get("/meta/docs/{name}", response_model=Document)
+async def document(name: DocumentName, user: CurrentUserDep) -> Document:
+    """Отдаёт текст правил или команды. Читает файлы репозитория с диска."""
+    path = DOCUMENTS[name]
+    if not path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Документ не найден")
+    return Document(name=name, content=path.read_text(encoding="utf-8"))
+```
+
+`DocumentName` как `Literal` даёт две вещи разом: FastAPI сам отвергает
+неизвестное имя до входа в обработчик, и это же имя попадает в OpenAPI, а
+оттуда — в типы клиента. Опечатка в имени документа на фронтенде станет
+ошибкой `tsc`.
+
+- [ ] **Шаг 4: Подключить роутер в `backend/app/main.py`**
+
+```python
+from app.features.meta.router import router as meta_router
+
+app.include_router(meta_router, prefix="/api")
+```
+
+Импорт — в шапку, вызов — после `register_error_handlers`.
+
+- [ ] **Шаг 5: Запустить тест**
+
+Run: `cd backend && uv run pytest tests/api/test_meta.py -v`
+Expected: PASS, 9 passed
+
+- [ ] **Шаг 6: Коммит**
+
+```bash
+git add backend/app/features/meta/router.py backend/app/main.py \
+        backend/tests/api/test_meta.py
+git commit -m "feat: служебные маршруты health, build-info и документы"
 ```
 
 ---
