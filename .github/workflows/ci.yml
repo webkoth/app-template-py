@@ -1,0 +1,117 @@
+name: ci
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    # Postgres поднимается и здесь, а не только в доставке: API-тесты и e2e
+    # обязаны прогоняться на ветке, до merge. Иначе красный прогон
+    # обнаруживался бы уже после слияния — main успевал бы принять коммит,
+    # который на контур не поедет.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: apptemplate_dev
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    # Переменные заданы на весь job: app.core.config разбирает окружение при
+    # импорте, а такой импорт однажды окажется в цепочке любого теста.
+    env:
+      # Две РАЗНЫЕ базы, а не одна на обе переменные. Обвязка тестов
+      # отказывается работать при совпадении адресов намеренно: она
+      # сбрасывает схему целиком, и совпадение однажды стоило схемы рабочей
+      # базы. Один адрес в обеих переменных ронял бы каждый прогон CI на
+      # сборе тестов, ещё до первой проверки.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/apptemplate_dev
+      DATABASE_URL_E2E: postgresql://postgres:postgres@localhost:5432/apptemplate_e2e
+      APP_ENV: local
+      APP_AUTH_SECRET: ci-build-secret-not-used-anywhere-real
+      COOKIE_SECURE: "false"
+    steps:
+      - uses: actions/checkout@v5
+
+      # Вторая база. Контейнер Postgres заводит только одну — ту, что в
+      # POSTGRES_DB, — а тестам нужны две: прогон pytest сбрасывает схему
+      # целиком, и делать это в базе, на которой проверяются миграции,
+      # нельзя. psql на ubuntu-latest предустановлен.
+      - name: Завести отдельную базу под тесты
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -c 'CREATE DATABASE apptemplate_e2e'
+
+      - name: Поставить uv и Python
+        uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # --group lint ставит import-linter, которого нет в dev по умолчанию.
+      # На Linux у grimp есть готовое колесо, поэтому здесь это дёшево.
+      - run: uv sync --frozen --group lint
+        working-directory: backend
+
+      - run: uv run ruff format --check .
+        working-directory: backend
+      - run: uv run ruff check .
+        working-directory: backend
+      - run: uv run mypy app
+        working-directory: backend
+      - run: uv run --group lint lint-imports --config .importlinter
+        working-directory: backend
+
+      # Схема накатывается до тестов: API-тесты идут в настоящую базу.
+      - run: uv run alembic upgrade head
+        working-directory: backend
+      - run: uv run pytest
+        working-directory: backend
+
+      - run: npm ci
+        working-directory: frontend
+      # tsc -b --force, а не tsc --noEmit, и это ровно та же поправка, что в
+      # Makefile. Корневой tsconfig.json — это `files: []` плюс references, и
+      # в не-build режиме tsc в references не заходит: на файле с
+      # `const probe: number = "строка"` --noEmit возвращает 0, а -b — 2. То
+      # есть шаг с --noEmit не проверял бы во фронтенде ничего и при этом
+      # выглядел бы в логе прогона сделанной работой. --force обязателен:
+      # без него tsc верит кэшу сборки и молчит.
+      - run: npx tsc -b --force
+        working-directory: frontend
+      - run: npm run test
+        working-directory: frontend
+
+      # Дрейф контракта: бэкенд поменял схему, фронт не перегенерировал
+      # типы. Ловится здесь, а не в бою.
+      - name: Типы клиента совпадают со схемой
+        run: |
+          cd backend && uv run python -m app.openapi > /tmp/openapi.json
+          cd ../frontend && npx openapi-typescript /tmp/openapi.json -o /tmp/schema.d.ts
+          diff -u src/api/schema.d.ts /tmp/schema.d.ts || {
+            echo "::error::Типы клиента разошлись со схемой. Выполни: make openapi"
+            exit 1
+          }
+
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      # Отдельного npm run build нет намеренно: сборку делает сам Playwright
+      # через webServer, и второй build удвоил бы самый долгий шаг прогона.
+      # Сломанная сборка всё равно валит прогон — сервер не поднимется.
+      - run: npx playwright test
+        working-directory: frontend
