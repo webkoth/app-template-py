@@ -6709,7 +6709,13 @@ import { api, toApiError } from "@/api/client"
 import { PageMain } from "@/components/page-main"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -6747,6 +6753,20 @@ export function ExpensesPage() {
     queryKey: ["expenses"],
     queryFn: async () => (await api.GET("/api/expenses")).data ?? [],
   })
+
+  // Сводка считается на сервере, а не из уже загруженного списка. Список
+  // однажды станет страничным, и подсчёт по нему тихо превратится в «итого
+  // по первой странице» — цифра останется, смысл уйдёт.
+  //
+  // Ключ вложен в ["expenses"]: invalidateQueries по этому префиксу
+  // обновляет и список, и сводку разом, поэтому после добавления расхода
+  // их нельзя забыть развести.
+  const summary = useQuery({
+    queryKey: ["expenses", "summary"],
+    queryFn: async () => (await api.GET("/api/expenses/summary")).data ?? [],
+  })
+
+  const totalMinor = (summary.data ?? []).reduce((sum, c) => sum + c.total_minor, 0)
 
   const form = useForm<Values>({
     resolver: zodResolver(schema),
@@ -6787,6 +6807,36 @@ export function ExpensesPage() {
   return (
     <PageMain>
       <h1 className="text-3xl font-semibold">Расходы</h1>
+
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <CardHeader>
+            <CardDescription>Всего</CardDescription>
+            {/* data-testid, а не поиск по тексту: сумма меняется от прогона
+                к прогону, а по подписи «Всего» пришлось бы ходить к
+                соседнему узлу через локатор-родитель — такой селектор
+                ломается от любой правки вёрстки карточки. */}
+            <CardTitle className="text-lg tabular-nums" data-testid="expenses-total">
+              {formatMoney(totalMinor)}
+            </CardTitle>
+          </CardHeader>
+        </Card>
+        {summary.data?.map((c) => (
+          <Card key={c.category}>
+            <CardHeader>
+              <CardDescription>{c.category}</CardDescription>
+              <CardTitle className="text-lg tabular-nums">
+                {formatMoney(c.total_minor)}
+              </CardTitle>
+              {/* Округление живёт здесь: сервер отдаёт точную долю.
+                  Проценты округляются независимо друг от друга, поэтому
+                  сложенные глазами могут дать не ровно 100 — это не ошибка
+                  счёта, а цена показа целыми процентами. */}
+              <CardDescription>{Math.round(c.share * 100)}%</CardDescription>
+            </CardHeader>
+          </Card>
+        ))}
+      </div>
 
       <Card className="mt-6">
         <CardHeader>
@@ -7606,6 +7656,24 @@ test("сумма сверх предела отклоняется с читае�
   await page.getByRole("button", { name: "Добавить" }).click()
 
   await expect(page.getByText(/больше предельной/)).toBeVisible()
+})
+
+test("сводка обновляется вместе с таблицей", async ({ page }) => {
+  // Сводка приходит отдельным запросом, и забытая инвалидация оставляет её
+  // прежней: цифра на экране есть, но она врёт — а таблица рядом уже
+  // правильная, поэтому глазами это не ловится.
+  //
+  // Сравнивается «до» и «после», а не конкретное значение: база e2e общая
+  // для всех сценариев, и точная сумма зависит от порядка прогона.
+  const total = page.getByTestId("expenses-total")
+  const before = await total.textContent()
+
+  await page.getByLabel("Дата").fill("2026-08-31")
+  await page.getByLabel("Назначение").fill(`Сводка ${Date.now()}`)
+  await page.getByLabel("Сумма").fill("777")
+  await page.getByRole("button", { name: "Добавить" }).click()
+
+  await expect(total).not.toHaveText(before ?? "")
 })
 
 test("изменение попадает в журнал", async ({ page }) => {
