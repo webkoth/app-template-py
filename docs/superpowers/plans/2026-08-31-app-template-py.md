@@ -5343,6 +5343,39 @@ async def test_blank_name_rejected(client, login_as):
     assert response.json()["field"] == "name"
 
 
+async def test_index_gives_the_same_message_as_the_check(
+    client, login_as, make_user, monkeypatch
+):
+    # Проверку до вставки обходят две одновременные заявки с одним логином:
+    # между проверкой и вставкой стоит await на scrypt, и обе проходят. Здесь
+    # то же самое воспроизводится дёшево — проверка отключается, и заявка
+    # упирается прямо в уникальный индекс.
+    #
+    # Без обработки индекса админ видит «Что-то пошло не так» вместо «логин
+    # занят», а в лог уезжает трейсбек с текстом SQL: охранник сработал, а
+    # выглядит поломкой.
+    from app.features.users import service
+
+    await login_as(role=Role.admin, login="boss")
+    await make_user(login="ivan")
+
+    async def never_taken(*args: object, **kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(service, "login_taken", never_taken)
+    response = await client.post(
+        "/api/users",
+        json={
+            "login": "ivan",
+            "name": "Иван",
+            "role": "viewer",
+            "password": "длинныйпароль",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["field"] == "login"
+
+
 async def test_all_digit_password_rejected(client, login_as):
     # Восемь цифр проходят по длине, но это дата или телефон — то, что
     # подбирают первым.
@@ -5513,6 +5546,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -5528,16 +5562,23 @@ async def list_users(session: AsyncSession) -> list[User]:
     return list(result.scalars().all())
 
 
+LOGIN_TAKEN = "Такой логин уже занят"
+
+
+async def login_taken(session: AsyncSession, login: str) -> bool:
+    """Занят ли логин. Отдельной функцией — чтобы её можно было обойти в тесте."""
+    return (
+        await session.execute(select(User.id).where(User.login == login))
+    ).first() is not None
+
+
 async def create_user(
     session: AsyncSession, payload: CreateUserRequest, actor: str
 ) -> User:
-    taken = (
-        await session.execute(select(User.id).where(User.login == payload.login))
-    ).first()
-    if taken is not None:
-        # Проверка до вставки, а не обработка IntegrityError: до базы
-        # доходит понятное сообщение с именем поля, а не текст драйвера.
-        raise RuleViolation("Такой логин уже занят", field="login")
+    if await login_taken(session, payload.login):
+        # Проверка до вставки: до человека доходит понятное сообщение с именем
+        # поля, а не текст драйвера. Но настоящий охранник тут не она.
+        raise RuleViolation(LOGIN_TAKEN, field="login")
 
     user = User(
         login=payload.login,
@@ -5550,9 +5591,20 @@ async def create_user(
         created_at=datetime.now(UTC),
     )
     session.add(user)
-    # flush, а не commit: нужен id для записи в журнал, но транзакция
-    # обязана остаться одной на мутацию вместе с аудитом.
-    await session.flush()
+    try:
+        # flush, а не commit: нужен id для записи в журнал, но транзакция
+        # обязана остаться одной на мутацию вместе с аудитом.
+        await session.flush()
+    except IntegrityError as clash:
+        # Настоящий охранник — уникальный индекс, и проверка выше только
+        # делает его сообщение человеческим. Между проверкой и вставкой стоит
+        # await на scrypt: два одновременных запроса с одним логином проходят
+        # проверку оба, и второй упирается уже в индекс. Без этой ветки
+        # админ видит «Что-то пошло не так» вместо «логин занят», а в лог
+        # уезжает трейсбек с текстом SQL — то есть охранник срабатывает и
+        # выглядит поломкой.
+        await session.rollback()
+        raise RuleViolation(LOGIN_TAKEN, field="login") from clash
     write_audit(session, actor, "create", "User", str(user.id), payload.role.value)
     await session.commit()
     return user
@@ -5671,7 +5723,7 @@ app.include_router(users_router, prefix="/api")
 - [ ] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_users.py -v`
-Expected: PASS, 18 passed
+Expected: PASS, 19 passed
 
 - [ ] **Шаг 8: Коммит**
 
