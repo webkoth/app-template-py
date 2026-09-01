@@ -4464,6 +4464,7 @@ Create `backend/tests/api/test_meta.py`:
 
 ```python
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from app.features.meta import router as meta
 
@@ -4472,6 +4473,28 @@ async def test_health_is_open_and_touches_db(client):
     response = await client.get("/api/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+async def test_health_answers_503_when_database_is_down(client, session, monkeypatch):
+    # Ради этой ветки проверка и ходит в базу. Без неё маршрут отвечает 200
+    # при недоступной базе, доставка объявляет контур живым, и человек
+    # узнаёт правду от первого пользователя.
+    #
+    # Мутация «убрать session.execute» оставляет тест на счастливый путь
+    # зелёным: он подтверждает только то, что процесс жив.
+    async def broken(*args: object, **kwargs: object) -> None:
+        raise OperationalError("SELECT 1", None, Exception("база недоступна"))
+
+    monkeypatch.setattr(session, "execute", broken)
+    response = await client.get("/api/health")
+    assert response.status_code == 503
+
+
+def test_repo_root_points_at_the_repository():
+    # parents[4] — счёт уровней вручную, и он ломается молча: при переезде
+    # файла на уровень глубже все документы начинают отвечать «не найден», а
+    # искать причину будут в списке разрешённых имён.
+    assert (meta.REPO_ROOT / "backend" / "pyproject.toml").exists()
 
 
 async def test_build_info_is_open(client):
@@ -4525,7 +4548,7 @@ async def test_unknown_document_rejected(client, login_as, name):
 
 Run: `cd backend && uv run pytest tests/api/test_meta.py`
 Expected: FAIL — маршрутов `/api/health` и `/api/meta/*` ещё нет: все
-девять проверок падают на 404.
+одиннадцать проверок падают.
 
 - [ ] **Шаг 3: Написать `backend/app/features/meta/router.py`**
 
@@ -4539,6 +4562,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.deps import CurrentUserDep, SessionDep
 
@@ -4586,8 +4610,24 @@ async def health(session: SessionDep) -> Health:
     Ходит в базу намеренно: проверка, которая отвечает 200 при недоступной
     базе, подтверждает только то, что процесс жив, — а доставка на основании
     такой проверки объявляет успешной заведомо нерабочий контур.
+
+    Сбой базы ловится и превращается в 503, а не летит наверх пятисоткой.
+    Три причины, и ни одна не про красоту кода. 503 — это «сервис временно
+    недоступен», ровно то, что произошло, и балансировщик с монитором
+    понимают его без объяснений. Пятисотка же означает «в коде что-то
+    сломалось» и тянет за собой трейсбек в лог на КАЖДУЮ проверку живости —
+    а ходит она раз в несколько секунд, и настоящая ошибка утонет. И
+    третье: ветку отказа можно проверить тестом только если она отвечает, а
+    не выбрасывает.
+
+    Доставка ждёт ровно 200, так что 503 её по-прежнему останавливает.
     """
-    await session.execute(text("SELECT 1"))
+    try:
+        await session.execute(text("SELECT 1"))
+    except SQLAlchemyError as error:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "База данных недоступна"
+        ) from error
     return Health(status="ok")
 
 
@@ -4630,7 +4670,7 @@ app.include_router(meta_router, prefix="/api")
 - [ ] **Шаг 5: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_meta.py -v`
-Expected: PASS, 9 passed
+Expected: PASS, 11 passed
 
 - [ ] **Шаг 6: Коммит**
 
