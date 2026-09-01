@@ -4228,11 +4228,23 @@ async def test_denial_gives_the_connection_back_before_it_waits(monkeypatch):
 
         attempt = asyncio.create_task(denial())
 
-        async def wait_until(busy: bool) -> None:
+        async def wait_until(busy: bool) -> bool:
+            """Ждёт нужного состояния пула. Возвращает: задача ещё идёт.
+
+            Порядок двух чтений существенный. Сначала состояние пула, потом
+            состояние задачи: если соединение свободно в момент t1, а задача
+            ещё жива в момент t2 > t1, то освобождение точно случилось раньше
+            завершения. Обратный порядок этого не доказывает, и проверка
+            начинает врать под нагрузкой — прогон, где цикл событий встал на
+            все две секунды окна, объявлял бы удержание там, где его нет.
+            Один такой ложный отказ уже наблюдался.
+            """
             for _ in range(1000):
-                if engine.pool.checkedout() == (1 if busy else 0):
-                    return
-                if attempt.done():
+                reached = engine.pool.checkedout() == (1 if busy else 0)
+                still_running = not attempt.done()
+                if reached:
+                    return still_running
+                if not still_running:
                     break
                 await asyncio.sleep(0.01)
             await attempt
@@ -4243,8 +4255,7 @@ async def test_denial_gives_the_connection_back_before_it_waits(monkeypatch):
             )
 
         await wait_until(busy=True)
-        await wait_until(busy=False)
-        released_before_the_end = not attempt.done()
+        released_before_the_end = await wait_until(busy=False)
         await attempt
     finally:
         await engine.dispose()
@@ -7127,7 +7138,9 @@ def build(tmp_path: Path, monkeypatch) -> TestClient:
     # Сборки фронтенда во время прогона бэкенда нет, поэтому раздача
     # монтируется на подставной каталог. Иначе mount_frontend выходит по
     # первой же строке, и всё, что ниже, не проверяется вовсе.
-    (tmp_path / "assets").mkdir()
+    # exist_ok: проверка отдачи файла из assets кладёт его туда до вызова
+    # build, и каталог к этому моменту уже есть.
+    (tmp_path / "assets").mkdir(exist_ok=True)
     (tmp_path / "index.html").write_text("<!doctype html>окно", encoding="utf-8")
     monkeypatch.setattr(static, "DIST", tmp_path)
 
@@ -7180,16 +7193,29 @@ def test_assets_are_served_by_the_mount(tmp_path, monkeypatch):
     # страница грузилась бы, а скрипты молча не работали.
     (tmp_path / "assets").mkdir(exist_ok=True)
     (tmp_path / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
-    response = build(tmp_path, monkeypatch).get("/assets/app.js")
+    client = build(tmp_path, monkeypatch)
+    response = client.get("/assets/app.js")
     assert response.status_code == 200
     assert "console.log" in response.text
+
+    # Существующий файл отдаёт и перехватчик — ветка отдачи файла подобрала
+    # бы его сама, и одной проверки выше мало: удаление монтирования её не
+    # роняет. Различает реализации ОТСУТСТВУЮЩИЙ файл. StaticFiles отвечает
+    # на него 404, перехватчик — index.html с кодом 200, и тогда тег script
+    # получает HTML вместо кода: страница «грузится», приложение молчит, а в
+    # консоли ошибка про MIME, по которой причину не найти.
+    assert client.get("/assets/нет-такого.js").status_code == 404
 
 
 def test_the_catch_all_stays_out_of_the_schema(tmp_path, monkeypatch):
     # Перехватчик в схеме означает маршрут `/{path:path}` в типах клиента:
     # он уедет туда молча и будет выглядеть частью API.
+    # Ключ в схеме — `/{path}`, а не `/{path:path}`: FastAPI берёт
+    # `route.path_format`, а тот преобразователь `:path` уже снял. Проверка
+    # на исходную запись охраняла бы пустое место — такой строки в схеме не
+    # бывает никогда, и снятие include_in_schema проходило бы молча.
     client = build(tmp_path, monkeypatch)
-    assert "/{path:path}" not in client.app.openapi()["paths"]
+    assert "/{path}" not in client.app.openapi()["paths"]
 
 
 def test_the_catch_all_is_registered_after_the_api(tmp_path, monkeypatch):
@@ -7209,6 +7235,72 @@ def test_the_catch_all_is_registered_after_the_api(tmp_path, monkeypatch):
 
     paths = [getattr(route, "path", "") for route in create_app().routes]
     assert paths[-1] == "/{path:path}", paths[-3:]
+
+
+async def _ask(app: FastAPI, path: str) -> bytes:
+    """Запрос прямо в ASGI, минуя нормализацию клиента.
+
+    Через TestClient такую проверку не сделать: httpx схлопывает `../` ещё
+    до отправки, и проверялся бы клиент, а не приложение. uvicorn путь не
+    схлопывает — только раскодирует %2F в разделитель. Сверено с живым
+    сервером: `GET /../../.env` доходит до обработчика как есть.
+    """
+    chunks: list[bytes] = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message) -> None:
+        if message["type"] == "http.response.body":
+            chunks.append(message.get("body", b""))
+
+    await app(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [(b"host", b"test")],
+            "client": ("127.0.0.1", 1234),
+            "server": ("test", 80),
+        },
+        receive,
+        send,
+    )
+    return b"".join(chunks)
+
+
+async def test_the_build_is_not_a_way_out_of_the_directory(tmp_path, monkeypatch):
+    # Ветка отдачи файла склеивает путь из запроса — то есть открывает диск.
+    # Держит её только проверка на принадлежность DIST, и без этой проверки
+    # `GET /../../.env` отдаёт наружу секрет подписи сессий целиком: на
+    # контуре .env лежит в корне репозитория, ровно двумя уровнями выше
+    # dist. Воспроизведено на живом uvicorn — утекает, код 200.
+    dist = tmp_path / "frontend" / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html>окно", encoding="utf-8")
+    (tmp_path / ".env").write_text("APP_AUTH_SECRET=секрет-подписи", encoding="utf-8")
+    monkeypatch.setattr(static, "DIST", dist)
+
+    app = FastAPI()
+    static.mount_frontend(app)
+
+    # Пути уже раскодированы — ровно в таком виде их отдаёт uvicorn, %2F он
+    # разворачивает в разделитель сам.
+    for target in [
+        "/../.env",
+        "/../../.env",
+        "/./../../.env",
+        "/assets/../../.env",
+        "/index.html/../../.env",
+    ]:
+        body = await _ask(app, target)
+        assert b"APP_AUTH_SECRET" not in body, target
 ```
 
 - [ ] **Шаг 2: Написать `backend/app/features/audit/service.py`**
@@ -7329,8 +7421,12 @@ def mount_frontend(app: FastAPI) -> None:
         # кодом 200, то есть HTML вместо картинки, и вкладка оставалась бы
         # без значка без единой ошибки в консоли.
         #
-        # Склейки пути тут не происходит: `resolve` и проверка на
-        # принадлежность DIST отвергают любые `../`, а обращение к каталогу
+        # Путь склеивается из запроса, то есть эта ветка открывает диск, и
+        # держит её ровно одна проверка — принадлежность DIST после resolve.
+        # Без неё `GET /../../.env` отдаёт наружу секрет подписи сессий: на
+        # контуре .env лежит в корне репозитория, ровно двумя уровнями выше
+        # dist. Воспроизведено на живом uvicorn — утекает, код 200; uvicorn
+        # путь не схлопывает и %2F раскодирует сам. Обращение к каталогу
         # уходит в index.html как обычный маршрут SPA.
         candidate = (DIST / path).resolve()
         if candidate.is_file() and candidate.is_relative_to(DIST.resolve()):

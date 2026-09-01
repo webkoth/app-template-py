@@ -322,11 +322,23 @@ async def test_denial_gives_the_connection_back_before_it_waits(monkeypatch):
 
         attempt = asyncio.create_task(denial())
 
-        async def wait_until(busy: bool) -> None:
+        async def wait_until(busy: bool) -> bool:
+            """Ждёт нужного состояния пула. Возвращает: задача ещё идёт.
+
+            Порядок двух чтений существенный. Сначала состояние пула, потом
+            состояние задачи: если соединение свободно в момент t1, а задача
+            ещё жива в момент t2 > t1, то освобождение точно случилось раньше
+            завершения. Обратный порядок этого не доказывает, и проверка
+            начинает врать под нагрузкой — прогон, где цикл событий встал на
+            все две секунды окна, объявлял бы удержание там, где его нет.
+            Один такой ложный отказ уже наблюдался.
+            """
             for _ in range(1000):
-                if engine.pool.checkedout() == (1 if busy else 0):
-                    return
-                if attempt.done():
+                reached = engine.pool.checkedout() == (1 if busy else 0)
+                still_running = not attempt.done()
+                if reached:
+                    return still_running
+                if not still_running:
                     break
                 await asyncio.sleep(0.01)
             await attempt
@@ -337,8 +349,7 @@ async def test_denial_gives_the_connection_back_before_it_waits(monkeypatch):
             )
 
         await wait_until(busy=True)
-        await wait_until(busy=False)
-        released_before_the_end = not attempt.done()
+        released_before_the_end = await wait_until(busy=False)
         await attempt
     finally:
         await engine.dispose()
