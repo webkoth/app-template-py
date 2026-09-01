@@ -13,6 +13,33 @@ export const api = createClient<paths>({
   credentials: "include",
 })
 
+/**
+ * Данные ответа или исключение. Через это проходит КАЖДЫЙ вызов api:
+ * queryFn должна бросать, иначе react-query считает запрос удавшимся, а
+ * mutationFn — иначе onSuccess отработает на неслучившемся изменении.
+ *
+ * Проверяется код ответа, а не наличие разобранного тела. Привычное
+ * `if (error) throw error` пропускает отказ с пустым или не-JSON телом:
+ * openapi-fetch кладёт в error только то, что разобрал. Воспроизведено с
+ * остановленным бэкендом — прокси Vite отвечает «502 Bad Gateway,
+ * text/plain, ноль байт», error оказывается пустым, и форма «Новый расход»
+ * очищалась, будто расход сохранён. Молчаливый ложный успех хуже
+ * молчаливого отказа: человек уходит уверенным, что данные записаны.
+ */
+export function unwrap<T>(result: {
+  data?: T
+  error?: unknown
+  response: Response
+}): T {
+  if (!result.response.ok) {
+    // error как есть: конверт бэкенда разберёт toApiError. Пустое тело —
+    // подставной Error, чтобы бросаемое значение никогда не было undefined:
+    // react-query такой отказ показал бы как успех с пустыми данными.
+    throw result.error ?? new Error(`HTTP ${result.response.status}`)
+  }
+  return result.data as T
+}
+
 /** Ошибка, разобранная из единого конверта бэкенда. */
 export interface ApiError {
   message: string

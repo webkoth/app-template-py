@@ -3,7 +3,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { z } from "zod"
-import { api, toApiError } from "@/api/client"
+import { api, toApiError, unwrap } from "@/api/client"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -33,8 +33,10 @@ export function LoginPage() {
       // прошлой попытки, к этой отношения не имеющее. Человек читает его
       // как ответ на то, что отправил только что.
       form.clearErrors("root")
-      const { error } = await api.POST("/api/auth/login", { body: values })
-      if (error) throw error
+      // unwrap бросает по коду ответа. `if (error) throw error` пропускал
+      // отказ с пустым телом — недоступный бэкенд считался верным входом,
+      // и человек оставался на форме без единого слова о причине.
+      unwrap(await api.POST("/api/auth/login", { body: values }))
     },
     onSuccess: async () => {
       // refetchQueries, а не invalidateQueries. invalidate перезапрашивает
