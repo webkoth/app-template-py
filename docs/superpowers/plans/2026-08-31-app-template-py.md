@@ -3254,6 +3254,12 @@ _MESSAGES = {
     "extra_forbidden": "Лишнее поле",
     "greater_than": "Значение слишком мало",
     "less_than": "Значение слишком велико",
+    # ge/le дают СВОИ типы, не greater_than/less_than. Разница видна только
+    # на первом же применении: `?limit=0` отвечал «Input should be greater
+    # than or equal to 1» — по-английски, в приложении с русским
+    # интерфейсом. Ровно то, ради чего эта таблица существует.
+    "greater_than_equal": "Значение слишком мало",
+    "less_than_equal": "Значение слишком велико",
     # На HTTP-пути pydantic отдаёт именно model_attributes_type, а не
     # model_type: последний бывает только при прямой проверке модели, где
     # формулировка «тело запроса» неверна по смыслу.
@@ -7048,6 +7054,62 @@ async def test_newest_first(client, login_as):
     rows = (await client.get("/api/audit")).json()
     assert len(rows) == 2
     assert rows[0]["ts"] >= rows[1]["ts"]
+
+
+async def test_limit_actually_limits(client, login_as):
+    # Потолок был доказан только объявлением параметра: что запрос его
+    # ПРИМЕНЯЕТ, не проверяло ничто — удаление `.limit(limit)` из сервиса
+    # проходило молча. А смысл потолка именно в применении: без него запрос
+    # однажды выгрузит в память всю историю контура.
+    await login_as(role=Role.admin, login="boss")
+    for title in ["Первый", "Второй", "Третий"]:
+        await client.post("/api/expenses", json={**EXPENSE, "title": title})
+    assert len((await client.get("/api/audit?limit=1")).json()) == 1
+
+
+async def test_entry_carries_what_the_screen_shows(client, login_as):
+    # Состав записи не проверял ничто: удаление detail из схемы оставляло
+    # прогон зелёным. Экран журнала показывает именно эти колонки, а detail
+    # — единственное, по чему через год поймут, что произошло.
+    await login_as(role=Role.admin, login="boss")
+    await client.post("/api/expenses", json=EXPENSE)
+    row = (await client.get("/api/audit")).json()[0]
+    assert row["entity"] == "Expense"
+    assert row["entity_id"]
+    assert "Софт" in row["detail"]
+
+
+async def test_limit_refusal_speaks_russian(client, login_as):
+    # Отказ по границе уходил клиенту по-английски: «Input should be greater
+    # than or equal to 1». ge/le дают СВОИ типы ошибки, которых не было в
+    # таблице переводов, и разница вылезла на первом же их применении.
+    # Проверка кода ответа этого не видит — человек видит.
+    await login_as(role=Role.admin, login="boss")
+    body = (await client.get("/api/audit?limit=0")).json()
+    assert body["field"] == "limit"
+    assert body["error"] == "Значение слишком мало"
+    assert (await client.get("/api/audit?limit=5000")).json()["error"] == (
+        "Значение слишком велико"
+    )
+
+
+async def test_interactive_docs_are_off(client, login_as):
+    # Страницы FastAPI выключены намеренно: на контуре они висели бы
+    # открытым описанием API. Решение принято в задаче 17 и не проверялось
+    # ничем — во всём наборе тестов не было ни одного упоминания /docs.
+    assert (await client.get("/docs")).status_code == 404
+    assert (await client.get("/redoc")).status_code == 404
+
+
+async def test_schema_describes_the_api(client):
+    # Из этой схемы генерируются типы клиента. Пустая или неполная схема
+    # означает молча пропавшие маршруты на фронтенде — а `make check-openapi`
+    # ловит только расхождение с уже сгенерированным файлом.
+    from app.main import app
+
+    paths = app.openapi()["paths"]
+    for path in ["/api/health", "/api/auth/login", "/api/users", "/api/expenses"]:
+        assert path in paths, sorted(paths)
 ```
 
 Create `backend/tests/unit/test_static.py`:
@@ -7099,6 +7161,54 @@ def test_real_api_route_still_answers(tmp_path, monkeypatch):
     # Обратная сторона: перехватчик не должен съедать живые маршруты.
     response = build(tmp_path, monkeypatch).get("/api/health")
     assert response.json() == {"status": "ok"}
+
+
+def test_file_from_the_build_is_served_as_itself(tmp_path, monkeypatch):
+    # Vite кладёт в dist не только assets, но и всё содержимое public —
+    # favicon, robots.txt, картинки — прямо в корень сборки. Без отдельной
+    # ветки они попадали бы в перехватчик и получали index.html с кодом 200:
+    # HTML вместо картинки, вкладка без значка и ни одной ошибки в консоли.
+    (tmp_path / "robots.txt").write_text("User-agent: *\n", encoding="utf-8")
+    response = build(tmp_path, monkeypatch).get("/robots.txt")
+    assert response.status_code == 200
+    assert "User-agent" in response.text
+
+
+def test_assets_are_served_by_the_mount(tmp_path, monkeypatch):
+    # Монтирование /assets отдельным Mount снимает удаление: без него файл
+    # подобрал бы перехватчик и вернул index.html с кодом 200 — то есть
+    # страница грузилась бы, а скрипты молча не работали.
+    (tmp_path / "assets").mkdir(exist_ok=True)
+    (tmp_path / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+    response = build(tmp_path, monkeypatch).get("/assets/app.js")
+    assert response.status_code == 200
+    assert "console.log" in response.text
+
+
+def test_the_catch_all_stays_out_of_the_schema(tmp_path, monkeypatch):
+    # Перехватчик в схеме означает маршрут `/{path:path}` в типах клиента:
+    # он уедет туда молча и будет выглядеть частью API.
+    client = build(tmp_path, monkeypatch)
+    assert "/{path:path}" not in client.app.openapi()["paths"]
+
+
+def test_the_catch_all_is_registered_after_the_api(tmp_path, monkeypatch):
+    # Порядок монтирования в main.py несущий: перехватчик обязан стоять
+    # после всех роутеров. Пока сборки фронтенда нет, перестановка ничего не
+    # меняет — mount_frontend выходит первой строкой, — и мутация проходит
+    # молча. На контуре, где сборка есть, та же перестановка отвечает 404 на
+    # КАЖДЫЙ маршрут API: проверено, падают 36 тестов.
+    #
+    # Поэтому приложение собирается здесь заново, с подложенным каталогом
+    # сборки, — и проверяется само расположение маршрута.
+    (tmp_path / "assets").mkdir(exist_ok=True)
+    (tmp_path / "index.html").write_text("<!doctype html>окно", encoding="utf-8")
+    monkeypatch.setattr(static, "DIST", tmp_path)
+
+    from app.main import create_app
+
+    paths = [getattr(route, "path", "") for route in create_app().routes]
+    assert paths[-1] == "/{path:path}", paths[-3:]
 ```
 
 - [ ] **Шаг 2: Написать `backend/app/features/audit/service.py`**
@@ -7211,6 +7321,21 @@ def mount_frontend(app: FastAPI) -> None:
         # клиент ждёт JSON и покажет «неожиданный ответ» вместо 404.
         if path.startswith("api/"):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Маршрут не найден")
+
+        # Файл с таким именем в сборке — отдаём его. Монтирования /assets
+        # мало: Vite кладёт в dist ещё и всё содержимое public — favicon,
+        # robots.txt, картинки, — а они лежат в корне сборки, а не в assets.
+        # Без этой ветки запрос на /favicon.ico получал бы index.html с
+        # кодом 200, то есть HTML вместо картинки, и вкладка оставалась бы
+        # без значка без единой ошибки в консоли.
+        #
+        # Склейки пути тут не происходит: `resolve` и проверка на
+        # принадлежность DIST отвергают любые `../`, а обращение к каталогу
+        # уходит в index.html как обычный маршрут SPA.
+        candidate = (DIST / path).resolve()
+        if candidate.is_file() and candidate.is_relative_to(DIST.resolve()):
+            return FileResponse(candidate)
+
         return FileResponse(DIST / "index.html")
 ```
 
@@ -7265,29 +7390,47 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(
-    title="apptemplate",
-    lifespan=lifespan,
-    # Схема нужна для генерации типов клиента; интерактивные страницы
-    # FastAPI выключены — на контуре они висели бы открытым описанием API.
-    docs_url=None,
-    redoc_url=None,
-)
+def create_app() -> FastAPI:
+    """Собирает приложение.
 
-register_error_handlers(app)
+    Фабрика, а не сборка по месту, ради одной проверки: порядок монтирования
+    здесь несущий, а поймать его перестановку иначе нечем. Пока сборки
+    фронтенда нет, `mount_frontend` выходит первой же строкой, перестановка
+    ничего не меняет, и мутация проходит молча — а на контуре, где сборка
+    есть, та же перестановка отвечает 404 на КАЖДЫЙ маршрут API. Проверено:
+    с подложенной сборкой падают 36 тестов.
 
-for router in (
-    meta_router,
-    auth_router,
-    users_router,
-    expenses_router,
-    audit_router,
-):
-    app.include_router(router, prefix="/api")
+    С фабрикой проверка собирает приложение сама, подсунув каталог сборки, и
+    смотрит, что перехватчик зарегистрирован последним.
+    """
+    app = FastAPI(
+        title="apptemplate",
+        lifespan=lifespan,
+        # Схема нужна для генерации типов клиента; интерактивные страницы
+        # FastAPI выключены — на контуре они висели бы открытым описанием API.
+        docs_url=None,
+        redoc_url=None,
+    )
 
-# Монтируется последним: перехватчик /{path:path} обязан стоять после всех
-# маршрутов API, иначе он поглотит их.
-mount_frontend(app)
+    register_error_handlers(app)
+
+    for router in (
+        meta_router,
+        auth_router,
+        users_router,
+        expenses_router,
+        audit_router,
+    ):
+        app.include_router(router, prefix="/api")
+
+    # Монтируется последним: перехватчик /{path:path} обязан стоять после
+    # всех маршрутов API, иначе он поглотит их.
+    mount_frontend(app)
+    return app
+
+
+# Имя `app` остаётся: `uvicorn app.main:app` и обвязка тестов ссылаются на него.
+app = create_app()
 ```
 - [ ] **Шаг 6: Написать `backend/app/openapi.py`**
 
