@@ -4707,6 +4707,26 @@ async def test_list_requires_admin(client, login_as):
     assert (await client.get("/api/users")).status_code == 403
 
 
+async def test_create_and_update_require_admin(client, login_as, make_user):
+    # Роль проверяется на КАЖДОМ маршруте, а не только на чтении списка.
+    # Проверка одного маршрута оставляет мутацию «снять AdminDep с создания»
+    # зелёной — а это открытая дверь: любой вошедший заводит себе админа.
+    await login_as(role=Role.editor, login="ivan")
+    target = await make_user(login="жертва", role=Role.viewer)
+    created = await client.post(
+        "/api/users",
+        json={
+            "login": "новый",
+            "name": "Новый",
+            "role": "admin",
+            "password": "длинныйпароль",
+        },
+    )
+    assert created.status_code == 403
+    updated = await client.patch(f"/api/users/{target.id}", json={"role": "admin"})
+    assert updated.status_code == 403
+
+
 async def test_admin_sees_list(client, login_as):
     await login_as(role=Role.admin, login="boss")
     response = await client.get("/api/users")
@@ -4747,6 +4767,44 @@ async def test_create_writes_audit_in_same_transaction(client, session, login_as
     assert [(e.actor, e.action, e.entity) for e in entries] == [
         ("boss", "create", "User")
     ]
+
+
+async def test_created_user_can_log_in(client, login_as):
+    # Замыкание круга: заведённой записью можно войти. Без этого мутация,
+    # кладущая пароль в password_hash как есть, остаётся зелёной — учётные
+    # записи создаются, выглядят целыми, и ни одна из них не работает.
+    await login_as(role=Role.admin, login="boss")
+    await client.post(
+        "/api/users",
+        json={
+            "login": "ivan",
+            "name": "Иван",
+            "role": "viewer",
+            "password": "длинныйпароль",
+        },
+    )
+    response = await client.post(
+        "/api/auth/login", json={"login": "ivan", "password": "длинныйпароль"}
+    )
+    assert response.status_code == 200
+
+
+async def test_password_never_reaches_the_journal(client, session, login_as):
+    # В журнал пишет тот же вызов, что и создание, и дописать туда «что
+    # завели» — соблазн на одну строку. Журнал читают админы, он переживает
+    # учётную запись и уезжает в резервные копии.
+    await login_as(role=Role.admin, login="boss")
+    await client.post(
+        "/api/users",
+        json={
+            "login": "ivan",
+            "name": "Иван",
+            "role": "viewer",
+            "password": "оченьсекретно",
+        },
+    )
+    details = (await session.execute(select(AuditLog.detail))).scalars().all()
+    assert all("оченьсекретно" not in (d or "") for d in details), details
 
 
 async def test_duplicate_login_rejected_with_message(client, login_as):
@@ -4828,10 +4886,13 @@ async def test_all_digit_password_rejected(client, login_as):
 
 
 async def test_short_password_rejected(client, login_as):
+    # Семь символов, а не «123»: короткая строка проходит и при пороге в
+    # три, то есть саму восьмёрку такой тест не закрепляет. Ровно на один
+    # меньше порога — закрепляет.
     await login_as(role=Role.admin, login="boss")
     response = await client.post(
         "/api/users",
-        json={"login": "ivan", "name": "Иван", "role": "viewer", "password": "123"},
+        json={"login": "ivan", "name": "Иван", "role": "viewer", "password": "семьсим"},
     )
     assert response.status_code == 400
     assert response.json()["field"] == "password"
@@ -5135,7 +5196,7 @@ app.include_router(users_router, prefix="/api")
 - [ ] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_users.py -v`
-Expected: PASS, 15 passed
+Expected: PASS, 18 passed
 
 - [ ] **Шаг 8: Коммит**
 
@@ -5269,6 +5330,18 @@ async def test_delete_requires_editor(client, login_as):
     await login_as(role=Role.editor, login="ivan")
     created = (await client.post("/api/expenses", json=VALID)).json()
     assert (await client.delete(f"/api/expenses/{created['id']}")).status_code == 200
+
+
+async def test_delete_writes_audit(client, session, login_as):
+    # Удаление — такая же мутация, как создание, и в журнал обязано попасть
+    # оно же. Проверка «удаление требует роли» этого не закрепляет: с
+    # потерянной записью удаление продолжает работать, а история молча
+    # обрывается — по журналу расход выглядит существующим.
+    await login_as(role=Role.editor, login="ivan")
+    created = await client.post("/api/expenses", json={**VALID, "title": "На снос"})
+    await client.delete(f"/api/expenses/{created.json()['id']}")
+    actions = (await session.execute(select(AuditLog.action))).scalars().all()
+    assert "delete" in actions, actions
 
 
 async def test_summary_returns_shares(client, login_as):
@@ -5505,7 +5578,7 @@ app.include_router(expenses_router, prefix="/api")
 - [ ] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_expenses.py -v`
-Expected: PASS, 13 passed
+Expected: PASS, 14 passed
 
 - [ ] **Шаг 8: Коммит**
 
