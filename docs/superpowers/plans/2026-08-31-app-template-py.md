@@ -4037,6 +4037,40 @@ async def test_successful_login_clears_counter(client, make_user):
     assert login_limiter.size() == marked - 1
 
 
+async def test_bootstrap_creates_reachable_account(session, monkeypatch):
+    # У первой учётной записи охранника не было вовсе: `ensure_bootstrap_user`
+    # не вызывался ни одним тестом, и мутация «убрать .lower()» проходила
+    # молча. Цена такой пропажи — контур, куда невозможно войти: запись есть,
+    # пара из .env верна, а форма отвечает «неверный логин или пароль».
+    from app.core.config import settings
+    from app.features.auth.service import ensure_bootstrap_user
+
+    monkeypatch.setattr(settings, "app_bootstrap_login", "Admin")
+    await ensure_bootstrap_user(session)
+
+    created = (
+        await session.execute(select(User).where(User.login == "admin"))
+    ).scalar_one()
+    assert created.role is Role.admin
+
+
+async def test_bootstrap_does_nothing_when_table_is_not_empty(
+    session, make_user, monkeypatch
+):
+    # Условие «только на пустой таблице» — вторая половина того же правила.
+    # Без него каждый перезапуск возвращал бы отключённую запись admin с
+    # известной всем парой, то есть отменял бы решение владельца.
+    from app.core.config import settings
+    from app.features.auth.service import ensure_bootstrap_user
+
+    monkeypatch.setattr(settings, "app_bootstrap_login", "первый")
+    await make_user(login="ivan")
+    await ensure_bootstrap_user(session)
+
+    logins = (await session.execute(select(User.login))).scalars().all()
+    assert logins == ["ivan"]
+
+
 async def test_login_records_last_login(client, session, make_user):
     await make_user(login="ivan")
     await client.post("/api/auth/login", json={"login": "ivan", "password": "секрет"})
@@ -4405,7 +4439,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 - [ ] **Шаг 8: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_auth.py -v`
-Expected: PASS, 14 passed
+Expected: PASS, 16 passed
 
 - [ ] **Шаг 9: Коммит**
 
