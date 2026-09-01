@@ -8324,14 +8324,22 @@ const privateRoute = createRoute({
   },
 })
 
-// Параметр обобщённый, а не `path: string`. С обычной строкой литерал пути
-// теряется на входе в помощник, дерево регистрируется с путём-строкой, и
-// типизированные ссылки перестают знать закрытую часть приложения: список
-// LINKS перестаёт собираться вовсе — `Type '"/expenses" | …' is not
-// assignable to type '"/" | "/login" | "." | ".."'`. Проверка при этом не
-// строже, а слабее. Замерено.
-const page = <TPath extends string>(path: TPath, component: () => JSX.Element) =>
-  createRoute({ getParentRoute: () => privateRoute, path, component })
+// Параметр обобщённый, а не `path: string`. С `string` литерал пути теряется
+// на входе в помощник, дерево маршрутов собирается с путём-строкой, и
+// типизированные ссылки знают только «/» и «/login»: `to="/expenses"` не
+// собирается, а `to="/выдуманное"` проходит. Замерено: с `path: string`
+// tsc падает на SiteNav, с обобщённым — ноль ошибок, а зонд на
+// несуществующий путь падает.
+// `JSX.Element | null`, а не просто `JSX.Element`: currentUserQuery по типу
+// отдаёт `CurrentUser | null`, и страница закрытой части сужает его
+// охранником `if (!user) return null`. Ветка недостижима — сюда пускает
+// beforeLoad, который без сессии уводит на /login, — но компилятор её
+// требует, и без этого допущения ни одна такая страница в помощник не
+// проходит.
+const page = <TPath extends string>(
+  path: TPath,
+  component: () => JSX.Element | null
+) => createRoute({ getParentRoute: () => privateRoute, path, component })
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -8480,11 +8488,25 @@ export function LoginPage() {
 
   const submit = useMutation({
     mutationFn: async (values: Values) => {
+      // Прошлый отказ сервера снимается на новой отправке. react-hook-form
+      // сам чистит только ошибки полей, а root остаётся: рядом со свежими
+      // «Укажи логин» висело бы прежнее «Неверный логин или пароль» — от
+      // прошлой попытки, к этой отношения не имеющее. Человек читает его
+      // как ответ на то, что отправил только что.
+      form.clearErrors("root")
       const { error } = await api.POST("/api/auth/login", { body: values })
       if (error) throw error
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["auth", "me"] })
+      // refetchQueries, а не invalidateQueries. invalidate перезапрашивает
+      // только активные запросы, а на форме входа за currentUserQuery никто
+      // не подписан: запрос помечался бы устаревшим, но в кэше оставался бы
+      // null — тот самый, который положил гейт, уводя сюда. ensureQueryData
+      // в beforeLoad отдаёт кэш как есть (null — это данные, а не пустота),
+      // видит «не вошёл» и возвращает на /login. Замерено в браузере: с
+      // invalidate верная пара admin / admin оставляла на форме входа
+      // молча, без ошибки, а перезагрузка страницы открывала главную.
+      await queryClient.refetchQueries({ queryKey: ["auth", "me"] })
       await navigate({ to: "/" })
     },
     onError: (error) => {

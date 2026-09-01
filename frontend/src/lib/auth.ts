@@ -8,7 +8,8 @@ import type { components } from "@/api/schema"
  * Рукописная копия сходится с бэкендом ровно до первой правки там: поле
  * переименовали — клиент собирается, читает undefined и показывает пустоту.
  * Здесь же переименование становится ошибкой компиляции, а ради этого
- * генерация типов из OpenAPI и заведена.
+ * генерация типов из OpenAPI и заведена. Проверено: переименование role в
+ * схеме роняет сборку в двух местах.
  */
 export type CurrentUser = components["schemas"]["CurrentUserResponse"]
 export type Role = CurrentUser["role"]

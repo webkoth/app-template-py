@@ -27,6 +27,12 @@ export function LoginPage() {
 
   const submit = useMutation({
     mutationFn: async (values: Values) => {
+      // Прошлый отказ сервера снимается на новой отправке. react-hook-form
+      // сам чистит только ошибки полей, а root остаётся: рядом со свежими
+      // «Укажи логин» висело бы прежнее «Неверный логин или пароль» — от
+      // прошлой попытки, к этой отношения не имеющее. Человек читает его
+      // как ответ на то, что отправил только что.
+      form.clearErrors("root")
       const { error } = await api.POST("/api/auth/login", { body: values })
       if (error) throw error
     },
