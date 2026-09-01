@@ -2,13 +2,11 @@ from fastapi import APIRouter, Request, Response
 
 from app.core.config import settings
 from app.core.deps import CurrentUserDep, SessionDep
-from app.core.security import AUTH_COOKIE
+from app.core.security import AUTH_COOKIE, SESSION_MAX_AGE_SECONDS
 from app.features.auth import service
 from app.features.auth.schemas import CurrentUserResponse, LoginRequest, OkResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-COOKIE_MAX_AGE = 7 * 24 * 60 * 60
 
 
 def _client_ip(request: Request) -> str:
@@ -35,7 +33,11 @@ async def login(
     response.set_cookie(
         AUTH_COOKIE,
         token,
-        max_age=COOKIE_MAX_AGE,
+        # Срок куки и срок токена — одна политика и одна константа. Двумя
+        # константами они разъезжаются молча, и обе стороны плохи: короче —
+        # человека выкидывает раньше срока без причины; длиннее — SPA видит
+        # куку, считает себя вошедшим и получает 401 на каждый запрос.
+        max_age=SESSION_MAX_AGE_SECONDS,
         httponly=True,
         # Lax, а не Strict: при Strict кука не уезжает при переходе по
         # ссылке из письма или мессенджера, и человек видит форму входа,

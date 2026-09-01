@@ -17,7 +17,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import StringConstraints
+from pydantic import AfterValidator, Field, StringConstraints
 from sqlalchemy import DateTime, Enum, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,6 +28,30 @@ from app.domain.roles import Role
 class UserStatus(StrEnum):
     active = "active"
     disabled = "disabled"
+
+
+LOGIN_MAX_LENGTH = 255
+
+
+def _fits_the_column(login: str) -> str:
+    """Проверяет длину ПОСЛЕ приведения регистра.
+
+    max_length у StringConstraints считается до приведения, а приведение
+    длину меняет: 200 турецких «İ» (U+0130) проверку проходят и превращаются
+    в 400 символов — lower() раскладывает каждую букву на две.
+    Воспроизведено.
+
+    Сегодня такой логин только не нашёлся бы в базе (вход делает SELECT), но
+    тот же тип берёт создание учётной записи, и там это
+    StringDataRightTruncation: пятисотка вместо отказа формы, а SQL с
+    параметрами уезжает в лог. Без этой проверки обещание ниже — «правило
+    описывает ровно ту колонку, рядом с которой лежит» — попросту неверно.
+    """
+    if len(login) > LOGIN_MAX_LENGTH:
+        # Текст по-русски и без значения: обработчик ошибок отдаёт его
+        # человеку как есть (см. _VALUE_ERROR_PREFIX в core/errors.py).
+        raise ValueError("Слишком длинное значение")
+    return login
 
 
 # Один вид логина на всё приложение.
@@ -46,15 +70,22 @@ class UserStatus(StrEnum):
 #
 # `^\S+$` — без пробельных символов: перевод строки внутри сломал бы разбор
 # токена, и такой пользователь молча не смог бы войти.
+#
+# Длина проверяется отдельным валидатором — после приведения, а не до; см.
+# _fits_the_column.
 Login = Annotated[
     str,
     StringConstraints(
         strip_whitespace=True,
         to_lower=True,
         min_length=1,
-        max_length=255,
         pattern=r"^\S+$",
     ),
+    AfterValidator(_fits_the_column),
+    # Предел объявляется в схеме отдельно, потому что проверяет его валидатор
+    # выше, а не StringConstraints. Описание схемы уходит в типы клиента, и
+    # без этой строки форма не знает, на чём обрывать ввод.
+    Field(json_schema_extra={"maxLength": LOGIN_MAX_LENGTH}),
 ]
 
 
@@ -62,7 +93,11 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
-    login: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    # Длина колонки и предел в типе — один литерал. Разъедься они, и
+    # значение, прошедшее проверку, база отказалась бы принимать.
+    login: Mapped[str] = mapped_column(
+        String(LOGIN_MAX_LENGTH), unique=True, index=True
+    )
     name: Mapped[str] = mapped_column(String(255))
     role: Mapped[Role] = mapped_column(
         # values_callable обязателен: без него SQLAlchemy пишет в базу ИМЕНА
