@@ -5883,7 +5883,7 @@ async def test_the_admin_count_asks_for_a_lock(session, make_user):
 
     seen: list[str] = []
 
-    def capture(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001, ANN202
+    def capture(conn, cursor, statement, parameters, context, executemany):
         seen.append(statement)
 
     boss = await make_user(login="boss", role=Role.admin)
@@ -6131,9 +6131,11 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 def no_control_characters(value: str) -> str:
     r"""Отвергает управляющие символы. Дороже всего здесь NUL.
 
-    Строка документации сырая (r"""), иначе `\x1b` ниже — не текст, а
-    настоящий ESC: `help()` этого модуля красил бы вывод в терминале ровно
-    тем способом, о котором предупреждает.
+    Строка документации сырая — с префиксом `r` перед кавычками, иначе
+    `\x1b` ниже не текст, а настоящий ESC: `help()` этого модуля красил бы
+    вывод в терминале ровно тем способом, о котором предупреждает. Префикс
+    здесь назван словами, а не показан: тройная кавычка внутри строки
+    документации закрыла бы её саму, и модуль перестал бы разбираться.
 
     PostgreSQL текст с NUL не принимает вовсе, и без этой проверки он
     доходит до вставки: asyncpg бросает CharacterNotInRepertoireError, это

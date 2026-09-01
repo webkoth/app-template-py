@@ -160,6 +160,25 @@ async def test_amount_over_int4_rejected_with_readable_message(client, login_as)
     assert "предельной" in response.json()["error"]
 
 
+async def test_extra_field_is_rejected(client, login_as):
+    # Зеркало запрета у пользователей. Лишнее поле — ошибка, а не мусор,
+    # который молча выбрасывают: отправитель уверен, что попросил о нём.
+    await login_as(role=Role.editor, login="ivan")
+    response = await client.post("/api/expenses", json={**VALID, "amount_minor": 1})
+    assert response.status_code == 400
+
+
+async def test_control_characters_in_title_rejected(client, login_as):
+    # Тот же общий тип, что у имени пользователя, но проверяется отдельно:
+    # у расхода он свой, и подмена типа на голую строку прошла бы молча.
+    await login_as(role=Role.editor, login="ivan")
+    response = await client.post(
+        "/api/expenses", json={**VALID, "title": "Подписка\x00на редактор"}
+    )
+    assert response.status_code == 400
+    assert response.json()["field"] == "title"
+
+
 async def test_blank_title_rejected(client, login_as):
     # Пробелы проходят проверку длины, если обрезать после неё, и в списке
     # расходов появляется строка без назначения.
