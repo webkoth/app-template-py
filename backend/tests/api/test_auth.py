@@ -161,6 +161,42 @@ async def test_me_returns_current_user(client, login_as):
     assert body["role"] == "editor"
 
 
+async def test_me_marks_the_bootstrap_account(client, login_as, monkeypatch):
+    # Предупреждение на первом экране висит по этому признаку. Считать его на
+    # клиенте нечем: он не знает ни настроенного логина, ни того, убраны ли
+    # переменные с контура.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "app_bootstrap_login", "шеф")
+    await login_as(login="шеф")
+    assert (await client.get("/api/auth/me")).json()["using_bootstrap_account"] is True
+
+
+async def test_me_does_not_mark_an_ordinary_account(client, login_as, monkeypatch):
+    # Обратная сторона: предупреждение, которое висит всегда, читать
+    # перестают. Сравнение с литералом «admin» промахивалось бы здесь —
+    # владелец, назвавший собственную запись admin, видел бы его вечно.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "app_bootstrap_login", "шеф")
+    await login_as(login="ivan")
+    assert (await client.get("/api/auth/me")).json()["using_bootstrap_account"] is False
+
+
+async def test_me_stops_marking_when_bootstrap_is_switched_off(
+    client, login_as, monkeypatch
+):
+    # Признак гаснет сам, когда владелец убирает APP_BOOTSTRAP_* из .env
+    # контура — последний шаг установки. Иначе предупреждение осталось бы
+    # висеть на выполненной работе.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "app_bootstrap_login", "шеф")
+    await login_as(login="шеф")
+    monkeypatch.setattr(settings, "app_bootstrap_password", "")
+    assert (await client.get("/api/auth/me")).json()["using_bootstrap_account"] is False
+
+
 async def test_me_without_cookie_is_401(client):
     response = await client.get("/api/auth/me")
     assert response.status_code == 401

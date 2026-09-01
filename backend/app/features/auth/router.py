@@ -5,6 +5,7 @@ from app.core.deps import CurrentUserDep, SessionDep
 from app.core.security import AUTH_COOKIE, SESSION_MAX_AGE_SECONDS
 from app.features.auth import service
 from app.features.auth.schemas import CurrentUserResponse, LoginRequest, OkResponse
+from app.features.auth.service import bootstrap_login
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -57,6 +58,14 @@ async def logout(response: Response) -> OkResponse:
 
 @router.get("/me", response_model=CurrentUserResponse)
 async def me(user: CurrentUserDep) -> CurrentUserResponse:
+    # Признак гаснет сам, когда владелец делает то, что предписано после
+    # установки: заводит свою запись и убирает APP_BOOTSTRAP_* из .env
+    # контура. Пустые переменные выключают bootstrap — см. bootstrap_enabled.
+    using_bootstrap = settings.bootstrap_enabled and user.login == bootstrap_login()
     return CurrentUserResponse(
-        id=user.id, login=user.login, name=user.name, role=user.role
+        id=user.id,
+        login=user.login,
+        name=user.name,
+        role=user.role,
+        using_bootstrap_account=using_bootstrap,
     )

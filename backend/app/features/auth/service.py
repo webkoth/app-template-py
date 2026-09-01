@@ -168,11 +168,11 @@ async def authenticate(
 
 
 # Тот же тип, что проверяет логин из формы. Не копия правила: две записи
-# одного инварианта однажды разъезжаются — см. _bootstrap_login.
+# одного инварианта однажды разъезжаются — см. bootstrap_login.
 _LOGIN = TypeAdapter(Login)
 
 
-def _bootstrap_login() -> str:
+def bootstrap_login() -> str:
     """APP_BOOTSTRAP_LOGIN, приведённый ровно тем же правилом, что и форма.
 
     Здесь стоял рукописный `strip().lower()`, и он расходился с типом
@@ -222,7 +222,7 @@ async def ensure_bootstrap_user(session: AsyncSession) -> None:
             # таблица непуста, значение переменной ни на что не влияет, и
             # ронять из-за него работающий контур на каждом перезапуске было
             # бы отказом ради ничего.
-            login=_bootstrap_login(),
+            login=bootstrap_login(),
             name=settings.app_bootstrap_name,
             role=Role.admin,
             # Тоже в пул потоков: hash_password стоит столько же, сколько
