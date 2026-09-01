@@ -17,9 +17,9 @@ export function BootstrapWarning({ user }: { user: CurrentUser }) {
       <TriangleAlert className="size-4" />
       <AlertTitle>Вход под учётной записью по умолчанию</AlertTitle>
       <AlertDescription>
-        Пара admin / admin известна всем, у кого есть шаблон. Заведи свою
-        учётную запись в разделе «Люди», войди под ней и отключи эту. Смены
-        пароля в приложении нет намеренно.
+        Пара admin / admin известна всем, у кого есть шаблон. Заведи свою учётную запись
+        в разделе «Люди», войди под ней и отключи эту. Смены пароля в приложении нет
+        намеренно.
       </AlertDescription>
     </Alert>
   )

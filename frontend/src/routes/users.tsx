@@ -98,7 +98,7 @@ export function UsersPage() {
         await api.PATCH("/api/users/{user_id}", {
           params: { path: { user_id: input.id } },
           body: { role: input.role ?? null, status: input.status ?? null },
-        })
+        }),
       )
     },
     onSuccess: invalidate,
@@ -117,9 +117,9 @@ export function UsersPage() {
     <PageMain>
       <h1 className="text-3xl font-semibold">Люди</h1>
       <p className="text-muted-foreground mt-2 max-w-2xl text-sm">
-        Учётные записи не удаляются: удалённый автор записи в журнале
-        превратил бы историю в набор осиротевших строк. Вместо удаления —
-        отключение: вход закрывается, уже выданные сессии отзываются.
+        Учётные записи не удаляются: удалённый автор записи в журнале превратил бы
+        историю в набор осиротевших строк. Вместо удаления — отключение: вход
+        закрывается, уже выданные сессии отзываются.
       </p>
 
       {canManage && (

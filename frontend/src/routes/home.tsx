@@ -36,9 +36,9 @@ export function HomePage() {
       <BootstrapWarning user={user} />
       <h1 className="text-3xl font-semibold">Стартовый шаблон на Python</h1>
       <p className="text-muted-foreground mt-2 max-w-2xl">
-        Это заготовка внутреннего приложения: вход, роли, журнал аудита и
-        образцовая фича. Когда появится первая настоящая функция, эту
-        страницу переписывают под неё — сам маршрут несущий, сюда ведёт вход.
+        Это заготовка внутреннего приложения: вход, роли, журнал аудита и образцовая
+        фича. Когда появится первая настоящая функция, эту страницу переписывают под неё
+        — сам маршрут несущий, сюда ведёт вход.
       </p>
       <div className="mt-8 grid gap-4 sm:grid-cols-2">
         {SECTIONS.filter((s) => hasRank(user.role, s.role)).map((section) => (

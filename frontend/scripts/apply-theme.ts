@@ -20,9 +20,7 @@ import { THEMES, findTheme } from "../src/lib/design/themes"
 const GLOBALS = fileURLToPath(new URL("../src/index.css", import.meta.url))
 
 function list(): string {
-  return THEMES.map(
-    (theme) => `  ${theme.name.padEnd(10)} ${theme.label}`
-  ).join("\n")
+  return THEMES.map((theme) => `  ${theme.name.padEnd(10)} ${theme.label}`).join("\n")
 }
 
 const name = process.argv[2]

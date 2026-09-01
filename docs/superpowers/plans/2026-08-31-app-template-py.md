@@ -48,6 +48,15 @@ find . -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null
 форматтером незачем. Смысл кода при этом меняться не должен: если форматтер
 хочет большего, чем переносы, — это повод остановиться и посмотреть.
 
+У prettier в этом проекте свой конфиг — `frontend/.prettierrc` с
+`{"semi": false, "printWidth": 88}` — и список исключений в
+`frontend/.prettierignore`. Без конфига прогон по умолчанию расставит точки
+с запятой и сузит строки до 80: весь фронтенд перепишется на первом же
+`--write`. Исключения — сгенерированное: `src/api/schema.d.ts` печатает
+openapi-typescript при каждом `make openapi`, а `src/components/ui/` кладёт
+shadcn, и переформатировав их, мы получим шумный дифф при каждом обновлении
+компонента.
+
 ---
 
 ## Фаза 0. Каркас репозитория
@@ -8275,7 +8284,8 @@ export function RequestFailure({
 import { Link, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { LogOut } from "lucide-react"
-import { api } from "@/api/client"
+import { api, unwrap } from "@/api/client"
+import { RequestFailure } from "@/components/request-failure"
 import { Button } from "@/components/ui/button"
 import { hasRank, type CurrentUser } from "@/lib/auth"
 
@@ -8297,7 +8307,12 @@ export function SiteNav({ user }: { user: CurrentUser }) {
 
   const logout = useMutation({
     mutationFn: async () => {
-      await api.POST("/api/auth/logout")
+      // Ответ проверяется, а не выбрасывается. Куку гасит сервер: без
+      // проверки интерфейс «выходил» при недоступном сервере, а кука
+      // оставалась живой — следующий переход молча возвращал бы человека
+      // в приложение под той же учётной записью. Хуже всего это на чужом
+      // компьютере, где выход и нажимают.
+      unwrap(await api.POST("/api/auth/logout"))
     },
     onSuccess: async () => {
       // Кэш сбрасывается целиком: в нём лежат данные, которые следующему
@@ -8330,6 +8345,15 @@ export function SiteNav({ user }: { user: CurrentUser }) {
           <LogOut className="size-4" />
         </Button>
       </nav>
+      {logout.isError && (
+        // Отказ выхода показывается на месте, а не в тишине: человек
+        // нажал «Выйти», и молчание он прочитает как «вышел».
+        <RequestFailure
+          error={logout.error}
+          title="Не удалось выйти"
+          className="mx-auto max-w-5xl rounded-none border-x-0 border-t-0"
+        />
+      )}
     </header>
   )
 }

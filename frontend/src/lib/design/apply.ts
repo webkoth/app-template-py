@@ -7,8 +7,7 @@
  * не то. Маркер — это явный договор файла со скриптом.
  */
 
-export const START_MARKER =
-  "/* theme:start — не править руками, см. npm run theme */"
+export const START_MARKER = "/* theme:start — не править руками, см. npm run theme */"
 export const END_MARKER = "/* theme:end */"
 
 export function replaceThemeBlock(css: string, themeCss: string): string {
@@ -19,7 +18,7 @@ export function replaceThemeBlock(css: string, themeCss: string): string {
     throw new Error(
       `В app/globals.css не найдены маркеры темы.\n` +
         `Ожидались строки:\n  ${START_MARKER}\n  ${END_MARKER}\n` +
-        `Без них неясно, что заменять, и переписывать файл наугад нельзя.`
+        `Без них неясно, что заменять, и переписывать файл наугад нельзя.`,
     )
   }
 

@@ -108,7 +108,7 @@ export function ExpensesPage() {
       unwrap(
         await api.DELETE("/api/expenses/{expense_id}", {
           params: { path: { expense_id: id } },
-        })
+        }),
       )
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["expenses"] }),

@@ -42,8 +42,8 @@ export function AuditPage() {
     <PageMain>
       <h1 className="text-3xl font-semibold">Журнал</h1>
       <p className="text-muted-foreground mt-2 max-w-2xl text-sm">
-        Каждая мутация данных пишется сюда той же транзакцией, что и само
-        изменение. Показаны последние двести записей.
+        Каждая мутация данных пишется сюда той же транзакцией, что и само изменение.
+        Показаны последние двести записей.
       </p>
 
       {entries.isError ? (
