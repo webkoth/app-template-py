@@ -98,12 +98,19 @@ frontend/src/routes/
 
 ### Задача 1: Настройки слоя
 
+> **Сделано** (`d5a0047`, `9b66682`, `832c373`). Итоговый код строже блоков
+> ниже: у `upload_dir` появился валидатор, требующий абсолютного пути (без
+> него `UPLOAD_DIR=""` проходил молча), запас живости требует ТРЁХКРАТНОГО
+> превышения, а не просто большего, в `model_config` добавлен
+> `allow_inf_nan=False`, у `job_max_attempts` — `le=10`. Причины — в
+> сообщении коммита `832c373`.
+
 **Files:**
 - Modify: `backend/app/core/config.py`
 - Modify: `.env.example`
 - Test: `backend/tests/unit/test_config.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Дописать в `backend/tests/unit/test_config.py`:
 
@@ -151,12 +158,12 @@ def test_unknown_integrations_mode_is_refused():
         Settings(_env_file=None, **BASE, INTEGRATIONS_MODE="почти-настоящий")
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_config.py`
 Expected: FAIL — у `Settings` нет полей `upload_max_bytes` и прочих.
 
-- [ ] **Шаг 3: Дописать поля в `backend/app/core/config.py`**
+- [x] **Шаг 3: Дописать поля в `backend/app/core/config.py`**
 
 В класс `Settings`, после `app_bootstrap_name`:
 
@@ -200,7 +207,7 @@ Expected: FAIL — у `Settings` нет полей `upload_max_bytes` и про�
             )
 ```
 
-- [ ] **Шаг 4: Дописать `.env.example`**
+- [x] **Шаг 4: Дописать `.env.example`**
 
 ```bash
 # --- слой данных ---
@@ -223,18 +230,18 @@ JOB_MAX_ATTEMPTS="3"
 INTEGRATIONS_MODE="mock"
 ```
 
-- [ ] **Шаг 5: Дописать `uploads/` в `.gitignore`**
+- [x] **Шаг 5: Дописать `uploads/` в `.gitignore`**
 
 ```gitignore
 uploads/
 ```
 
-- [ ] **Шаг 6: Запустить тесты**
+- [x] **Шаг 6: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/unit/test_config.py -v`
 Expected: PASS
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add backend/app/core/config.py backend/tests/unit/test_config.py \
@@ -246,11 +253,23 @@ git commit -m "feat: настройки слоя данных"
 
 ### Задача 2: Хранилище файлов
 
+> **Сделано** (`4dfa69c`, `832c373`). Код в блоках ниже содержал две дыры,
+> найденные при исполнении, и одно противоречие с задачей 6:
+>
+> 1. `detect_kind(data[:8])` — первые восемь байт PDF это `%PDF-1.7`, чистый
+>    ASCII: тело PDF проходило `save` как CSV. Смотрим 4096 байт.
+> 2. Правило «голова обязана декодироваться как utf-8» отвергало CSV в
+>    cp1251 — то, чем Excel выгружает по умолчанию. А `read_table` из задачи
+>    6 cp1251 читает намеренно: загрузка отказывала бы в файле, который
+>    разбор умеет разбирать. **Кодировка — забота разбора, а не загрузки.**
+>    Загрузка отделяет таблицу от двоичного: известная сигнатура
+>    (`%PDF`, PNG, JPEG, GIF, ELF, gzip, OLE) или нулевой байт в голове.
+
 **Files:**
 - Create: `backend/app/core/storage.py`
 - Test: `backend/tests/unit/test_storage.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_storage.py`:
 
@@ -328,12 +347,12 @@ def test_delete_is_silent_when_the_file_is_already_gone(_dir):
     storage.delete(uuid.uuid7())
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_storage.py`
 Expected: FAIL — модуля `app.core.storage` нет.
 
-- [ ] **Шаг 3: Написать `backend/app/core/storage.py`**
+- [x] **Шаг 3: Написать `backend/app/core/storage.py`**
 
 ```python
 """Файлы на диске контура.
@@ -428,12 +447,12 @@ def delete(file_id: uuid.UUID) -> None:
     path_for(file_id).unlink(missing_ok=True)
 ```
 
-- [ ] **Шаг 4: Запустить тесты**
+- [x] **Шаг 4: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/unit/test_storage.py -v`
 Expected: PASS, 8 passed
 
-- [ ] **Шаг 5: Доказать охранников мутацией**
+- [x] **Шаг 5: Доказать охранников мутацией**
 
 Перед каждым прогоном: `find backend -name __pycache__ -type d -exec rm -rf {} +`
 
@@ -444,7 +463,7 @@ Expected: PASS, 8 passed
 | `detect_kind` всегда возвращает `"csv"` | `test_unknown_content_is_refused` |
 | `delete` без `missing_ok=True` | `test_delete_is_silent_when_the_file_is_already_gone` |
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/core/storage.py backend/tests/unit/test_storage.py
@@ -1173,6 +1192,11 @@ def test_windows_encoding_is_read_too():
     # Таблицы из Excel в России приезжают в cp1251 чаще, чем хотелось бы.
     # Отказ «не UTF-8» человек читает как «файл битый» и идёт искать
     # несуществующую проблему в своей выгрузке.
+    #
+    # Эта проверка — вторая половина решения, принятого в задаче 2:
+    # `storage.detect_kind` о кодировке НЕ судит именно для того, чтобы такой
+    # файл сюда доехал. Убрав поддержку cp1251 здесь, вернёшь отказ, только
+    # уже фоновой задачей — то есть человеку, который увидит его не сразу.
     frame = read_table("имя,цена\nа,1\n".encode("cp1251"), "csv")
     assert list(frame.columns) == ["имя", "цена"]
 
