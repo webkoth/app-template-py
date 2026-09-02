@@ -141,6 +141,27 @@ const owned = [
 const stale = owned.filter((file) => read(file)?.includes("apptemplatepy"))
 check("переименование", stale.length === 0, stale.join(", "))
 
+// Текст стартовой страницы — отдельная строка, а не ещё один файл в `owned`.
+// Слова `apptemplatepy` в нём нет вовсе: там написано «Стартовый шаблон на
+// Python» и абзац про заготовку, то есть проверка выше его не видит ни при
+// каком исходе. Забывается он чаще прочего — общий поиск по слагу его не
+// находит, — а читает его каждый на первом же экране своего приложения.
+// Шаг D установки требует его переписать, и до этой строки требование не
+// держало ничто.
+const HOME = "frontend/src/routes/home.tsx"
+const homeText = read(HOME)
+const templateWording = [
+  "Стартовый шаблон на Python",
+  "Это заготовка внутреннего приложения",
+].filter((phrase) => homeText?.includes(phrase))
+check(
+  "текст стартовой страницы переписан",
+  homeText !== null && templateWording.length === 0,
+  homeText === null
+    ? `${HOME} не найден`
+    : `осталось от шаблона: ${templateWording.join("; ")}`
+)
+
 const bootstrapLeft =
   read("AGENTS.md")?.includes("BOOTSTRAP_ONLY_START") ||
   read("CLAUDE.md")?.includes("BOOTSTRAP_ONLY_START")
