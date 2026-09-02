@@ -1,0 +1,97 @@
+[project]
+name = "apptemplatepy"
+version = "0.0.1"
+description = "Стартовый шаблон внутреннего приложения на FastAPI"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.141",
+    "uvicorn[standard]>=0.52",
+    "pydantic>=2.13",
+    "pydantic-settings>=2.15",
+    # [asyncio] обязателен, и это не украшение. Он тянет greenlet, без
+    # которого падает любая операция через async-сессию. Само по себе
+    # SQLAlchemy объявляет greenlet условно, перечисляя архитектуры списком:
+    # там есть aarch64 (Linux ARM), но нет arm64 — а это ровно то, что
+    # возвращает platform.machine() на маке с Apple Silicon. То есть на
+    # боевом Linux всё работает, а у нового человека на маке шаблон
+    # разваливается при первом обращении к базе, сообщением
+    # «the greenlet library is required», не указывающим ни на
+    # архитектуру, ни на этот файл. Проверено на обеих ветках.
+    "sqlalchemy[asyncio]>=2.0.52",
+    "asyncpg>=0.31",
+    "alembic>=1.19",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16",
+    "mypy>=2.3",
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "httpx>=0.28",
+]
+# Отдельная группа, а НЕ dev. `uv sync` без флагов ставит dev по умолчанию, и
+# import-linter утянул бы за собой grimp, у которого нет колеса под cp314 на
+# macOS (есть только под free-threaded cp314t). Установка собирала бы Rust-
+# расширение около двадцати минут — на первом же `uv sync` у нового человека,
+# ещё до того, как он увидит работающее приложение. В отдельной группе эта
+# цена платится один раз при первом `make check` и не мешает установке.
+lint = ["import-linter>=2.14"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+# E,F — базовые ошибки; I — порядок импортов (замена isort); UP — современный
+# синтаксис; B — типичные ловушки; ASYNC — блокирующие вызовы в async-функциях;
+# RUF — правила самого ruff. ASYNC здесь не украшение: один synchronous вызов
+# внутри обработчика блокирует весь event loop, а значит и всех пользователей.
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+# RUF001-003 ловят кириллицу как «подозрительный» символ, похожий на латиницу.
+# Комментарии и docstring в этом проекте пишутся по-русски намеренно — это
+# ложные срабатывания почти на каждой строке, а не сигнал о реальной проблеме.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.isort]
+# Каталог backend/alembic превращает внешний пакет alembic в «свой»: ruff
+# определяет первую сторону по именам каталогов рядом с кодом и относит
+# `from alembic import op` к app. Из-за этого он требует переставлять
+# импорты в каждой сгенерированной миграции — в файле, который пишет не
+# человек. Пакет внешний, так и объявляем.
+known-third-party = ["alembic"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+# Плагина sqlalchemy.ext.mypy здесь нет намеренно. Он писался под старый стиль
+# объявления таблиц (Column плюс отдельная аннотация); для стиля 2.0 с Mapped[]
+# mypy выводит типы сам через dataclass_transform. Проверено: с
+# `--config-file=/dev/null` mypy читает Mapped[str] как str и ловит подстановку
+# str вместо int. Плагин цепляется за внутренний API mypy и ломается при его
+# обновлении — это отказ ради ничего.
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+# В тестах строгость мешает: фикстуры и параметризация тянут за собой
+# аннотации, которые ничего не проверяют.
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Оба scope — session, и это не украшение. В tests/conftest.py схема базы
+# создаётся фикстурой со scope="session", а движок общий на весь прогон. При
+# дефолтном function-scope цикла pytest-asyncio даёт либо ScopeMismatch, либо
+# «Task attached to a different loop» — соединение создано в одном цикле, а
+# используется в другом. Диагностируется это плохо, поэтому задаётся сразу.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+addopts = "-q"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

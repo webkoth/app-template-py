@@ -1,0 +1,104 @@
+name: ci
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    # Postgres поднимается и здесь, а не только в доставке: API-тесты и e2e
+    # обязаны прогоняться на ветке, до merge. Иначе красный прогон
+    # обнаруживался бы уже после слияния — main успевал бы принять коммит,
+    # который на контур не поедет.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: apptemplatepy_dev
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    # Переменные заданы на весь job: app.core.config разбирает окружение при
+    # импорте, а такой импорт однажды окажется в цепочке любого теста.
+    env:
+      # Две РАЗНЫЕ базы, а не одна на обе переменные. Обвязка тестов
+      # отказывается работать при совпадении адресов намеренно: она
+      # сбрасывает схему целиком, и совпадение однажды стоило схемы рабочей
+      # базы. Один адрес в обеих переменных ронял бы каждый прогон CI на
+      # сборе тестов, ещё до первой проверки.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/apptemplatepy_dev
+      DATABASE_URL_E2E: postgresql://postgres:postgres@localhost:5432/apptemplatepy_e2e
+      APP_ENV: local
+      APP_AUTH_SECRET: ci-build-secret-not-used-anywhere-real
+      COOKIE_SECURE: "false"
+    steps:
+      - uses: actions/checkout@v5
+
+      # Вторая база. Контейнер Postgres заводит только одну — ту, что в
+      # POSTGRES_DB, — а тестам нужны две: прогон pytest сбрасывает схему
+      # целиком, и делать это в базе, на которой проверяются миграции,
+      # нельзя. psql на ubuntu-latest предустановлен.
+      - name: Завести отдельную базу под тесты
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -c 'CREATE DATABASE apptemplatepy_e2e'
+
+      - name: Поставить uv и Python
+        uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # --group lint ставит import-linter, которого нет в dev по умолчанию.
+      # На Linux у grimp есть готовое колесо, поэтому здесь это дёшево.
+      - run: uv sync --frozen --group lint
+        working-directory: backend
+
+      # npm ci обязателен ДО `make check`: половину фронтенда тот проверяет
+      # только при существующем frontend/node_modules, а без него громко
+      # отказывается работать. Порядок здесь несущий, а не косметический.
+      - run: npm ci
+        working-directory: frontend
+
+      # Миграции накатываются на рабочую базу — так проверяется, что они
+      # ложатся на пустую. `make check` этого не делает намеренно: API-тесты
+      # создают схему из метаданных и в ОТДЕЛЬНОЙ базе.
+      - run: uv run alembic upgrade head
+        working-directory: backend
+
+      # Одна строка вместо переписанного своими словами списка шагов, и это
+      # не про краткость. Пока конвейер перечислял ruff, mypy, pytest, tsc и
+      # прочее поимённо, он был вторым списком тех же проверок — а два списка
+      # одного и того же расходятся всегда. Так и вышло: `npm run lint` в
+      # Makefile появился, в конвейере нет, и коммит с ошибкой линтера
+      # проезжал CI, если автор забыл прогнать `make check` у себя.
+      # Проверено: файл с условным useState даёт красный oxlint, но tsc,
+      # vitest и build возвращают ноль.
+      #
+      # Теперь состав проверок живёт в Makefile в единственном экземпляре, и
+      # добавленная туда проверка попадает в CI сама. Сквозные тесты ниже —
+      # единственное, чего в `make check` нет: им нужны отдельная база и
+      # браузер.
+      - run: make check
+
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      # Отдельного npm run build нет намеренно: сборку делает сам Playwright
+      # через webServer, и второй build удвоил бы самый долгий шаг прогона.
+      # Сломанная сборка всё равно валит прогон — сервер не поднимется.
+      - run: npx playwright test
+        working-directory: frontend

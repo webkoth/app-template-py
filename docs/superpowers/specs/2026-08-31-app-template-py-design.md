@@ -158,12 +158,14 @@ app-template-py/
         security.py      scrypt, подпись токена, кука
         deps.py          current_user, require_role
         audit.py         запись в журнал
+        users.py         таблица учётных записей: её читает deps на каждом
+                         запросе, поэтому здесь, а не в фиче
         errors.py        конверт ошибки и обработчики
         static.py        раздача собранного фронтенда
       domain/            чистая логика: money, dates, expenses, roles
       features/
         auth/            router, service, schemas
-        users/           router, service, schemas, models
+        users/           router, service, schemas
         expenses/        router, service, schemas, models
         meta/            router: health, build-info, содержимое AGENTS.md и docs/
     alembic/versions/
@@ -270,9 +272,12 @@ app-template-py/
 
 ## Контракт API
 
-- `GET /api/health` — единственный маршрут без авторизации: короткий
-  запрос в базу и 200, если контур жив. Им пользуется health-check
-  доставки.
+- `GET /api/health` — короткий запрос в базу и 200, если контур жив. Им
+  пользуется health-check доставки. Совсем без авторизации живут три
+  маршрута: он, вход и выход (вход выдаёт сессию, а гасить куку надо и
+  тогда, когда она уже недействительна). Список закреплён тестом
+  `backend/tests/api/test_route_guards.py`, и пополнять его — решение, а не
+  формальность.
 - Префикс `/api`. Версий в путях нет: клиент и сервер живут в одном
   репозитории и уезжают одним коммитом, версионировать контракт с самим
   собой — церемония без содержания.
@@ -460,7 +465,8 @@ Toolchain два, точка входа одна — иначе половину
 make check     ruff format --check · ruff check · mypy · lint-imports · pytest
                tsc --noEmit · проверка дрейфа типов · vitest
 make dev       бэкенд и фронтенд разом
-make migrate   alembic revision --autogenerate, затем чтение глазами
+make revision  alembic revision --autogenerate, затем чтение глазами
+make migrate   alembic upgrade head
 ```
 
 `make check` прогоняется перед любым коммитом. Его же прогоняет CI на
