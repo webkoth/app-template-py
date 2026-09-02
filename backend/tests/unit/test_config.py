@@ -3,7 +3,7 @@ import os
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings, describe_validation_error
+from app.core.config import ENV_FILE, Settings, describe_validation_error
 
 BASE = {
     "DATABASE_URL": "postgresql://u:p@localhost:5432/db",
@@ -19,9 +19,16 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     шелле или унаследованный от соседней задачи CI `APP_ENV=production` ронял
     бы тест про значения по умолчанию — или, что хуже, тихо подменял бы
     проверяемое значение, и тест проходил бы, проверив не то.
+
+    Список префиксов обязан расти вместе с настройками. Проверено на слое
+    данных: пока в нём не было `JOB_`, строка `JOB_MAX_ATTEMPTS=5` в шелле
+    роняла `test_layer_defaults_are_usable_without_env` — у одного человека,
+    на одной машине, и по причине, которой в тесте не видно.
     """
     for name in list(os.environ):
-        if name.startswith(("APP_", "DATABASE_URL", "COOKIE_")):
+        if name.startswith(
+            ("APP_", "DATABASE_URL", "COOKIE_", "JOB_", "UPLOAD_", "INTEGRATIONS_")
+        ):
             monkeypatch.delenv(name, raising=False)
 
 
@@ -144,7 +151,7 @@ def test_layer_defaults_are_usable_without_env():
     assert s.integrations_mode == "mock"
 
 
-def test_upload_dir_is_absolute_and_next_to_the_repository():
+def test_upload_dir_is_absolute_and_inside_the_repository():
     # Путь считается от файла настроек, а не от текущего каталога: приложение
     # запускают из backend/ (pm2 --cwd), тесты — из backend/, команды make —
     # из корня. Относительный путь дал бы три разных каталога загрузок, и
@@ -152,6 +159,10 @@ def test_upload_dir_is_absolute_and_next_to_the_repository():
     s = Settings(_env_file=None, **BASE)
     assert s.upload_dir.is_absolute()
     assert s.upload_dir.name == "uploads"
+    # Каталог лежит В корне репозитория, а не рядом с ним, — потому и
+    # понадобилась строка `uploads/` в .gitignore. Будь он снаружи, игнор
+    # был бы не нужен, и эта проверка охраняет именно ту связь.
+    assert s.upload_dir.parent == ENV_FILE.parent
 
 
 def test_stale_must_exceed_heartbeat():
@@ -159,15 +170,24 @@ def test_stale_must_exceed_heartbeat():
     # отбор у живого. Два воркера начнут считать одно и то же, а первый ещё
     # и запишет результат поверх второго. Настройка, которая молча
     # разрешает такое, хуже отсутствующей.
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as denial:
         Settings(
             _env_file=None,
             **BASE,
             JOB_HEARTBEAT_SECONDS="30",
             JOB_STALE_AFTER_SECONDS="20",
         )
+    # Проверяется ПРИЧИНА, а не сам факт отказа. Под `extra="forbid"` голый
+    # `pytest.raises(ValidationError)` на ещё не заведённое поле зелен и без
+    # кода: pydantic отвергает неизвестный ключ, и тест это засчитывает.
+    # Ровно так и вышло при написании — красной фазы у этой проверки не было.
+    assert "JOB_STALE_AFTER_SECONDS должен быть больше" in str(denial.value)
 
 
 def test_unknown_integrations_mode_is_refused():
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as denial:
         Settings(_env_file=None, **BASE, INTEGRATIONS_MODE="почти-настоящий")
+    # Опять причина, а не факт: «Лишнее поле» от `extra="forbid"` — тоже
+    # ValidationError, и без этой строки тест не отличает «режима такого
+    # нет» от «поля такого нет».
+    assert "live" in str(denial.value), "отказ обязан быть про набор режимов"
