@@ -1,5 +1,3 @@
-import os
-
 import pytest
 from pydantic import ValidationError
 
@@ -20,16 +18,18 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     бы тест про значения по умолчанию — или, что хуже, тихо подменял бы
     проверяемое значение, и тест проходил бы, проверив не то.
 
-    Список префиксов обязан расти вместе с настройками. Проверено на слое
-    данных: пока в нём не было `JOB_`, строка `JOB_MAX_ATTEMPTS=5` в шелле
+    Список берётся ИЗ САМОЙ модели, а не пишется руками. Руками он однажды
+    отстанет: пока в нём не было `JOB_`, строка `JOB_MAX_ATTEMPTS=5` в шелле
     роняла `test_layer_defaults_are_usable_without_env` — у одного человека,
-    на одной машине, и по причине, которой в тесте не видно.
+    на одной машине, и по причине, которой в тесте не видно. Поле, добавленное
+    завтра, попадает сюда само; список, который нельзя забыть обновить, лучше
+    правила «не забывай обновлять список».
+
+    Имена — заглавными: `alias_generator=str.upper` в настройках означает, что
+    поле `job_poll_seconds` читается из переменной `JOB_POLL_SECONDS`.
     """
-    for name in list(os.environ):
-        if name.startswith(
-            ("APP_", "DATABASE_URL", "COOKIE_", "JOB_", "UPLOAD_", "INTEGRATIONS_")
-        ):
-            monkeypatch.delenv(name, raising=False)
+    for name in Settings.model_fields:
+        monkeypatch.delenv(name.upper(), raising=False)
 
 
 def test_defaults_are_local_and_insecure_cookie():
@@ -44,6 +44,11 @@ def test_short_secret_rejected():
     with pytest.raises(ValidationError) as e:
         Settings(_env_file=None, **{**BASE, "APP_AUTH_SECRET": "коротко"})
     assert "APP_AUTH_SECRET" in str(e.value)
+    # Про длину, а не просто про имя поля. Отказ `extra="forbid"` выглядит
+    # как «APP_AUTH_SECRET\n  Extra inputs are not permitted» и содержит ту
+    # же подстроку — то есть проверка по одному имени зелена и в мире, где
+    # поля нет вовсе. Ровно эта болезнь нашлась у двух тестов слоя данных.
+    assert "at least 32" in str(e.value)
 
 
 def test_database_url_must_be_postgres():
@@ -159,9 +164,9 @@ def test_upload_dir_is_absolute_and_inside_the_repository():
     s = Settings(_env_file=None, **BASE)
     assert s.upload_dir.is_absolute()
     assert s.upload_dir.name == "uploads"
-    # Каталог лежит В корне репозитория, а не рядом с ним, — потому и
-    # понадобилась строка `uploads/` в .gitignore. Будь он снаружи, игнор
-    # был бы не нужен, и эта проверка охраняет именно ту связь.
+    # Каталог лежит В корне репозитория, а не рядом с ним. Саму связь с
+    # .gitignore проверяет test_uploads_are_ignored_by_git: эта строка ловит
+    # только Path("uploads") и Path.cwd()/"uploads".
     assert s.upload_dir.parent == ENV_FILE.parent
 
 
@@ -181,7 +186,94 @@ def test_stale_must_exceed_heartbeat():
     # `pytest.raises(ValidationError)` на ещё не заведённое поле зелен и без
     # кода: pydantic отвергает неизвестный ключ, и тест это засчитывает.
     # Ровно так и вышло при написании — красной фазы у этой проверки не было.
-    assert "JOB_STALE_AFTER_SECONDS должен быть больше" in str(denial.value)
+    assert "JOB_STALE_AFTER_SECONDS должен быть втрое больше" in str(denial.value)
+
+
+@pytest.mark.parametrize(
+    ("heartbeat", "stale"),
+    [
+        ("10", "10"),  # равные: задачу отбирают в момент отметки
+        ("10", "10.001"),  # запас в миллисекунду — тот же отбор у живого
+        ("10", "29"),  # меньше трёхкратного
+    ],
+)
+def test_a_margin_that_is_not_a_margin_is_refused(heartbeat, stale):
+    # Первая редакция требовала только «строго больше», и все три эти
+    # настройки проходили — то есть охранник пропускал ровно тот сценарий,
+    # ради которого поставлен. Запас обязан переживать несколько пропущенных
+    # отметок подряд: воркер притормаживает на сборке мусора и на записи в
+    # базу, и это норма, а не сбой.
+    with pytest.raises(ValidationError) as denial:
+        Settings(
+            _env_file=None,
+            **BASE,
+            JOB_HEARTBEAT_SECONDS=heartbeat,
+            JOB_STALE_AFTER_SECONDS=stale,
+        )
+    assert "втрое" in str(denial.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("UPLOAD_MAX_BYTES", "0"),
+        ("JOB_POLL_SECONDS", "0"),
+        ("JOB_HEARTBEAT_SECONDS", "0"),
+        ("JOB_STALE_AFTER_SECONDS", "0"),
+        ("JOB_MAX_ATTEMPTS", "0"),
+        ("JOB_MAX_ATTEMPTS", "1000"),
+    ],
+)
+def test_meaningless_limits_are_refused(name, value):
+    # Ограничения gt=0 / ge=1 / le=10 не проверялись ничем: их можно было
+    # снять со всех пяти полей, и прогон оставался зелёным. Что они ловят:
+    # JOB_POLL_SECONDS=0 — воркер бьёт в базу запросом без пауз, ничего при
+    # этом не делая; JOB_MAX_ATTEMPTS=0 — задача не выполняется никогда;
+    # 1000 — задача с ошибкой в данных занимает воркер до конца недели.
+    with pytest.raises(ValidationError) as denial:
+        Settings(_env_file=None, **BASE, **{name: value})
+    # Не «Лишнее поле»: иначе проверка зелена и в мире, где поля нет.
+    assert "Extra inputs" not in str(denial.value)
+
+
+def test_infinite_interval_is_refused():
+    # inf > 0 истинно, и без allow_inf_nan=False настройка проходила.
+    # JOB_STALE_AFTER_SECONDS="1e999" — опечатка в показателе — означала бы,
+    # что брошенная задача не возвращается в очередь никогда. Выглядит это
+    # как зависший воркер, и искать причину пошли бы в воркер.
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **BASE, JOB_STALE_AFTER_SECONDS="1e999")
+
+
+@pytest.mark.parametrize("value", ["", ".", "uploads", "var/www/slug/uploads"])
+def test_relative_upload_dir_is_refused(value):
+    # Ловушка была описана в .env.example и не закрыта ничем. Пустая строка
+    # даёт Path("."), «uploads» — путь от рабочего каталога, а каталогов три:
+    # pm2 запускает приложение и воркер с --cwd .../backend, команды make
+    # идут из корня. Загруженный минуту назад файл оказывался «не найден».
+    with pytest.raises(ValidationError) as denial:
+        Settings(_env_file=None, **BASE, UPLOAD_DIR=value)
+    assert "UPLOAD_DIR" in str(denial.value)
+
+
+def test_tilde_in_upload_dir_is_expanded_not_taken_literally():
+    # Path("~/uploads") — это каталог с именем «~» в текущем каталоге, и он
+    # создался бы молча. Тильда в .env — вещь обычная, поэтому она
+    # раскрывается, а не отвергается как относительный путь.
+    s = Settings(_env_file=None, **BASE, UPLOAD_DIR="~/uploads")
+    assert s.upload_dir.is_absolute()
+    assert "~" not in str(s.upload_dir)
+
+
+def test_uploads_are_ignored_by_git():
+    # Каталог загрузок лежит В корне репозитория, поэтому без строки в
+    # .gitignore `git status` забивается загруженными файлами, а доставка,
+    # делающая `git reset --hard`, начинает их видеть. Связь между
+    # умолчанием и .gitignore не держалась ничем: предыдущая проверка
+    # обещала её в комментарии, а сверяла только путь.
+    s = Settings(_env_file=None, **BASE)
+    ignore = (s.upload_dir.parent / ".gitignore").read_text(encoding="utf-8")
+    assert "uploads/" in ignore.split()
 
 
 def test_unknown_integrations_mode_is_refused():

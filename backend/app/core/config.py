@@ -8,7 +8,7 @@
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Корень репозитория: app/core/config.py → core, app, backend, корень.
@@ -42,6 +42,11 @@ class Settings(BaseSettings):
         # питоновскому имени — этим пользуются тесты.
         alias_generator=str.upper,
         populate_by_name=True,
+        # inf > 0 истинно, поэтому без этого JOB_STALE_AFTER_SECONDS="1e999"
+        # (опечатка в показателе) проходит валидацию — и брошенная задача не
+        # возвращается в очередь никогда. Выглядит это как зависший воркер, а
+        # не как ошибка в .env, и искать будут в воркере.
+        allow_inf_nan=False,
     )
 
     database_url: str = Field(description="Адрес PostgreSQL")
@@ -75,11 +80,36 @@ class Settings(BaseSettings):
     job_heartbeat_seconds: float = Field(default=10.0, gt=0)
     job_stale_after_seconds: float = Field(default=60.0, gt=0)
     # Три попытки: разрыв связи с базой и перезапуск на доставке проходят
-    # сами, а ошибка в данных от повторов не исчезнет.
-    job_max_attempts: int = Field(default=3, ge=1)
+    # сами, а ошибка в данных от повторов не исчезнет. Потолок сверху — про
+    # опечатку: JOB_MAX_ATTEMPTS=1000 занимает воркер задачей, которая уже
+    # не выполнится, до конца недели.
+    job_max_attempts: int = Field(default=3, ge=1, le=10)
     # Режим клиента внешних моделей. mock по умолчанию: шаблон обязан
     # работать сразу, без ключей и без сети.
     integrations_mode: Literal["live", "mock", "fixture"] = "mock"
+
+    @field_validator("upload_dir")
+    @classmethod
+    def _upload_dir_is_absolute(cls, value: Path) -> Path:
+        """Относительный UPLOAD_DIR — три разных каталога вместо одного.
+
+        Ловушка была описана в .env.example и не закрыта ничем: `UPLOAD_DIR=""`
+        даёт `Path(".")`, а `uploads` — путь от рабочего каталога процесса.
+        Каталогов же три: pm2 запускает приложение с `--cwd .../backend`,
+        воркер идёт оттуда же, а команды make — из корня. Файл, загруженный
+        минуту назад, оказывается «не найден», и причина не видна ниоткуда.
+
+        Комментарий в образце это не остановит: человек правит свой .env, а
+        не образец. Поэтому отказ, и на старте, а не при первой загрузке.
+        """
+        expanded = value.expanduser()
+        if not expanded.is_absolute():
+            raise ValueError(
+                "UPLOAD_DIR должен быть абсолютным путём: относительный "
+                "считается от рабочего каталога, а у приложения, воркера и "
+                "команд make он разный"
+            )
+        return expanded
 
     @model_validator(mode="after")
     def _check(self) -> Self:
@@ -90,15 +120,21 @@ class Settings(BaseSettings):
                 "на боевом контуре кука сессии обязана быть Secure "
                 "(COOKIE_SECURE=true): контур под HTTPS"
             )
-        if self.job_stale_after_seconds <= self.job_heartbeat_seconds:
+        if self.job_stale_after_seconds < 3 * self.job_heartbeat_seconds:
             # Отбор задачи раньше, чем воркер успевает поставить отметку, —
             # это отбор у живого: два воркера считают одно и то же, и второй
-            # затирает результат первого. Запас должен быть кратным, но
-            # проверяется минимальное: строгого больше достаточно, чтобы
-            # опечатка в .env не прошла молча.
+            # затирает результат первого.
+            #
+            # Кратность, а не просто «больше». Проверка «строго больше»
+            # пропускала HEARTBEAT=10, STALE=10.001 — то есть ровно ту
+            # настройку, от которой поставлена: пропущенная на сборке мусора
+            # или на медленной записи отметка отбирает задачу у живого. Запас
+            # должен переживать несколько пропусков подряд; в умолчаниях он
+            # шестикратный, минимум здесь — трёхкратный.
             raise ValueError(
-                "JOB_STALE_AFTER_SECONDS должен быть больше "
-                "JOB_HEARTBEAT_SECONDS: иначе задача отбирается у живого воркера"
+                "JOB_STALE_AFTER_SECONDS должен быть втрое больше "
+                "JOB_HEARTBEAT_SECONDS: иначе задача отбирается у живого "
+                "воркера, пропустившего одну отметку"
             )
         return self
 
