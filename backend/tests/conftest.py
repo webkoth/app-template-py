@@ -28,6 +28,7 @@ from app.main import app
 # таблица из трёх. Первый же тест фичи упал бы с «relation does not exist»,
 # и причину искали бы в тесте, а не в цепочке импортов.
 from app.core.audit import AuditLog  # noqa: F401  # isort: skip
+from app.core.jobs import Job  # noqa: F401  # isort: skip
 from app.features.expenses.models import Expense  # noqa: F401  # isort: skip
 
 # Отдельный движок под отдельную базу. Движок приложения здесь не годится:
@@ -141,8 +142,16 @@ def new_session() -> Callable[[], AsyncSession]:
     Данные, заведённые `make_user`, такой сессии не видны: они лежат в
     транзакции, которая не коммитится. Это не изъян, а условие — проверка
     одновременности работает на несуществующем логине.
+
+    expire_on_commit=False — ровно как у `SessionFactory` и у фикстуры
+    `session`. Голая AsyncSession живёт с умолчанием True, и это отличало бы
+    двойника от того, что он изображает: код, который после commit() читает
+    поле только что сохранённого объекта, в приложении работает, а здесь
+    падал бы MissingGreenlet — сброшенный атрибут тянет загрузку синхронно.
+    Проверено на `jobs.claim`: тест сообщал бы о поломке, которой в
+    приложении нет, и чинить пошли бы очередь.
     """
-    return lambda: AsyncSession(bind=test_engine)
+    return lambda: AsyncSession(bind=test_engine, expire_on_commit=False)
 
 
 @pytest.fixture
