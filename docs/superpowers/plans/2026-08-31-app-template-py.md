@@ -11631,21 +11631,31 @@ jobs:
 
           scp dist.tar.gz deploy@${{ secrets.SERVER_HOST }}:/tmp/$SLUG-dist.tar.gz
 
-          ssh deploy@${{ secrets.SERVER_HOST }} 'bash -s' <<EOF
+          # Heredoc В КАВЫЧКАХ, а значения приезжают через окружение
+          # команды. Без кавычек раннер раскрывает содержимое сам, и это
+          # уже дважды стоило доставки: сначала обратные кавычки в
+          # комментарии превращались в подстановку команды, потом — снова,
+          # в другом комментарии, где `set -euo\n# pipefail` выполнилось как
+          # `set -o`, напечатало список опций шелла, и сервер попытался
+          # выполнить «braceexpand on». `bash -n` такого не ловит.
+          #
+          # С кавычками тело уезжает буквально: ни экранировать $, ни
+          # следить за кавычками в комментариях больше не нужно.
+          ssh deploy@${{ secrets.SERVER_HOST }} \
+            "SLUG='$SLUG' REPO='${{ github.repository }}' bash -s" <<'EOF'
           set -euo pipefail
-          SLUG=$SLUG
-          DIR=/var/www/\$SLUG
-          cd "\$DIR"
-          source "\$DIR/.deploy-env"   # даёт PORT
+          DIR=/var/www/$SLUG
+          cd "$DIR"
+          source "$DIR/.deploy-env"   # даёт PORT
 
           # Первый деплой: кода ещё нет. Клонировать нельзя — каталог не
           # пуст: app-provision положил туда .env и .deploy-env, а git clone
           # в непустой каталог отказывается. Репозиторий разворачивается на
           # месте; файлы окружения целы — reset --hard не трогает
           # неотслеживаемое.
-          if [ ! -d "\$DIR/.git" ]; then
+          if [ ! -d "$DIR/.git" ]; then
             git init -q -b main
-            git remote add origin "git@github.com-\$SLUG:${{ github.repository }}.git"
+            git remote add origin "git@github.com-$SLUG:$REPO.git"
           fi
 
           git fetch origin main
@@ -11653,11 +11663,11 @@ jobs:
 
           # Собранная статика и версия приезжают архивом, а не собираются
           # здесь: Node на этом сервере нет.
-          rm -rf "\$DIR/frontend/dist"
-          mkdir -p "\$DIR/frontend"
-          tar -xzf /tmp/\$SLUG-dist.tar.gz -C "\$DIR/frontend" dist
-          tar -xzf /tmp/\$SLUG-dist.tar.gz -C "\$DIR" build-info.json
-          rm -f /tmp/\$SLUG-dist.tar.gz
+          rm -rf "$DIR/frontend/dist"
+          mkdir -p "$DIR/frontend"
+          tar -xzf /tmp/$SLUG-dist.tar.gz -C "$DIR/frontend" dist
+          tar -xzf /tmp/$SLUG-dist.tar.gz -C "$DIR" build-info.json
+          rm -f /tmp/$SLUG-dist.tar.gz
 
           # PATH задаётся явно. `ssh host 'bash -s'` запускает неинтерактивный
           # и не-логин шелл: он не читает ни .bashrc, ни .profile, и PATH
@@ -11666,9 +11676,9 @@ jobs:
           # ~/.local/bin под пользователя deploy, и без этой строки доставка
           # падает на «uv: command not found» уже после git reset --hard —
           # то есть на контуре остаётся новый код при старом процессе.
-          export PATH="\$HOME/.local/bin:\$PATH"
+          export PATH="$HOME/.local/bin:$PATH"
 
-          cd "\$DIR/backend"
+          cd "$DIR/backend"
           uv sync --frozen
           # Порядок шагов важен при ОТКАТЕ. Если откаченное дерево не
           # содержит файла ревизии, на которую база уже переведена, alembic
@@ -11681,12 +11691,12 @@ jobs:
           uv run alembic upgrade head
 
           export PM2_HOME=/home/deploy/.pm2
-          if pm2 describe "\$SLUG" > /dev/null 2>&1; then
-            pm2 reload "\$SLUG" --update-env
+          if pm2 describe "$SLUG" > /dev/null 2>&1; then
+            pm2 reload "$SLUG" --update-env
           else
-            pm2 start "\$DIR/backend/.venv/bin/python" --name "\$SLUG" \
-              --cwd "\$DIR/backend" \
-              -- -m uvicorn app.main:app --host 127.0.0.1 --port "\$PORT"
+            pm2 start "$DIR/backend/.venv/bin/python" --name "$SLUG" \
+              --cwd "$DIR/backend" \
+              -- -m uvicorn app.main:app --host 127.0.0.1 --port "$PORT"
             pm2 save
           fi
 
@@ -11694,10 +11704,10 @@ jobs:
           # Проверяем /api/health, а не корень: корень отдаёт index.html с
           # кодом 200 даже при недоступной базе, и доставка объявляла бы
           # успешным заведомо нерабочий контур.
-          CODE=\$(curl -s -o /dev/null -w '%{http_code}' \
-            "http://127.0.0.1:\$PORT/api/health")
-          [ "\$CODE" = "200" ] || { echo "контур ответил \$CODE"; exit 1; }
-          echo "доставлено: \$(git rev-parse --short HEAD)"
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+            "http://127.0.0.1:$PORT/api/health")
+          [ "$CODE" = "200" ] || { echo "контур ответил $CODE"; exit 1; }
+          echo "доставлено: $(git rev-parse --short HEAD)"
           EOF
 ```
 
