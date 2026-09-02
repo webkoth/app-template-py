@@ -128,3 +128,46 @@ def test_error_text_does_not_leak_secrets():
     assert "ПАРОЛЬБАЗЫ" not in text
     assert "СЕКРЕТПОДПИСИ" not in text
     assert "Secure" in text
+
+
+def test_layer_defaults_are_usable_without_env():
+    # Слой обязан работать сразу после установки ядра: человек, поставивший
+    # шаблон, не должен дописывать четыре переменные, чтобы увидеть, как
+    # загружается файл. Умолчания стоят здесь, а не только в .env.example —
+    # иначе контур, поднятый без них, падает на старте.
+    s = Settings(_env_file=None, **BASE)
+    assert s.upload_max_bytes == 32 * 1024 * 1024
+    assert s.job_poll_seconds == 1.0
+    assert s.job_heartbeat_seconds == 10.0
+    assert s.job_stale_after_seconds == 60.0
+    assert s.job_max_attempts == 3
+    assert s.integrations_mode == "mock"
+
+
+def test_upload_dir_is_absolute_and_next_to_the_repository():
+    # Путь считается от файла настроек, а не от текущего каталога: приложение
+    # запускают из backend/ (pm2 --cwd), тесты — из backend/, команды make —
+    # из корня. Относительный путь дал бы три разных каталога загрузок, и
+    # найти файл, загруженный вчера, стало бы делом удачи.
+    s = Settings(_env_file=None, **BASE)
+    assert s.upload_dir.is_absolute()
+    assert s.upload_dir.name == "uploads"
+
+
+def test_stale_must_exceed_heartbeat():
+    # Отбор задачи раньше, чем воркер успевает поставить отметку, — это
+    # отбор у живого. Два воркера начнут считать одно и то же, а первый ещё
+    # и запишет результат поверх второго. Настройка, которая молча
+    # разрешает такое, хуже отсутствующей.
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            **BASE,
+            JOB_HEARTBEAT_SECONDS="30",
+            JOB_STALE_AFTER_SECONDS="20",
+        )
+
+
+def test_unknown_integrations_mode_is_refused():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **BASE, INTEGRATIONS_MODE="почти-настоящий")

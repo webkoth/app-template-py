@@ -61,6 +61,26 @@ class Settings(BaseSettings):
     app_bootstrap_password: str = "admin"
     app_bootstrap_name: str = "Администратор"
 
+    # --- слой данных ---------------------------------------------------
+    # Каталог загрузок. Абсолютный и от файла настроек по той же причине,
+    # что и ENV_FILE выше: приложение запускают из backend/, а команды make
+    # — из корня, и относительный путь дал бы разные каталоги.
+    upload_dir: Path = ENV_FILE.parent / "uploads"
+    # 32 МиБ. Не про диск — про память: разбор таблицы держит её целиком.
+    upload_max_bytes: int = Field(default=32 * 1024 * 1024, gt=0)
+    # Опрос очереди. Секунда на фоне долгого счёта незаметна, а LISTEN/NOTIFY
+    # — вторая механика ожидания, которую пришлось бы отлаживать отдельно.
+    job_poll_seconds: float = Field(default=1.0, gt=0)
+    # Отметка живости и срок, после которого задача считается брошенной.
+    job_heartbeat_seconds: float = Field(default=10.0, gt=0)
+    job_stale_after_seconds: float = Field(default=60.0, gt=0)
+    # Три попытки: разрыв связи с базой и перезапуск на доставке проходят
+    # сами, а ошибка в данных от повторов не исчезнет.
+    job_max_attempts: int = Field(default=3, ge=1)
+    # Режим клиента внешних моделей. mock по умолчанию: шаблон обязан
+    # работать сразу, без ключей и без сети.
+    integrations_mode: Literal["live", "mock", "fixture"] = "mock"
+
     @model_validator(mode="after")
     def _check(self) -> Self:
         if not self.database_url.startswith(("postgresql://", "postgres://")):
@@ -69,6 +89,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "на боевом контуре кука сессии обязана быть Secure "
                 "(COOKIE_SECURE=true): контур под HTTPS"
+            )
+        if self.job_stale_after_seconds <= self.job_heartbeat_seconds:
+            # Отбор задачи раньше, чем воркер успевает поставить отметку, —
+            # это отбор у живого: два воркера считают одно и то же, и второй
+            # затирает результат первого. Запас должен быть кратным, но
+            # проверяется минимальное: строгого больше достаточно, чтобы
+            # опечатка в .env не прошла молча.
+            raise ValueError(
+                "JOB_STALE_AFTER_SECONDS должен быть больше "
+                "JOB_HEARTBEAT_SECONDS: иначе задача отбирается у живого воркера"
             )
         return self
 
