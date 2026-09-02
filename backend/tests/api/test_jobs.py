@@ -193,6 +193,41 @@ async def test_failure_returns_the_job_until_attempts_run_out(session, monkeypat
     assert second.finished_at is not None
 
 
+async def test_a_running_job_without_a_mark_is_not_stuck_forever(session):
+    # Обратная сторона протухания, и она не симметрична: сравнение с NULL в
+    # SQL даёт NULL, поэтому «выполняется, отметки нет» — это не «свежая
+    # задача», а строка, невидимая для отбора навсегда. Экран показывал бы
+    # живую работу, человек ждал бы результата, которого не будет.
+    #
+    # Такая строка появляется только при ошибке в коде или правке руками —
+    # и именно поэтому очередь обязана из неё выбираться сама.
+    jobs.enqueue(session, kind="проба", payload={}, actor="boss")
+    await session.commit()
+    taken = await jobs.claim(session)
+    assert taken is not None
+    taken.heartbeat_at = None
+    await session.commit()
+
+    again = await jobs.claim(session)
+    assert again is not None, "задача без отметки осталась бы running навсегда"
+    assert again.id == taken.id
+
+
+async def test_progress_outside_the_scale_is_clamped(session):
+    # Прогресс считает сам обработчик — делением на число строк, — а рисует
+    # по нему полосу экран. Пустая таблица, лишняя строка, округление: 101
+    # или -1 получить легко. Обрезка не проверялась ничем: мутация
+    # `job.progress = progress` не роняла ни одного теста.
+    jobs.enqueue(session, kind="проба", payload={}, actor="boss")
+    await session.commit()
+    job = await jobs.claim(session)
+    assert job is not None
+    await jobs.heartbeat(session, job, progress=1000)
+    assert job.progress == 100
+    await jobs.heartbeat(session, job, progress=-5)
+    assert job.progress == 0
+
+
 async def test_completion_stores_the_result(session):
     jobs.enqueue(session, kind="проба", payload={}, actor="boss")
     await session.commit()
