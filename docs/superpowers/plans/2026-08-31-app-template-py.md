@@ -8602,7 +8602,7 @@ cd frontend && npm install @tanstack/react-router
 
 ```typescript
 import { queryOptions } from "@tanstack/react-query"
-import { api } from "@/api/client"
+import { api, unwrap } from "@/api/client"
 import type { components } from "@/api/schema"
 
 /**
@@ -8632,11 +8632,17 @@ export function hasRank(actual: Role, required: Role): boolean {
 export const currentUserQuery = queryOptions({
   queryKey: ["auth", "me"],
   queryFn: async (): Promise<CurrentUser | null> => {
-    const { data, response } = await api.GET("/api/auth/me")
-    // 401 — это норма, а не сбой: человек ещё не вошёл. Бросив здесь,
-    // мы бы показывали экран ошибки вместо формы входа.
-    if (response.status === 401) return null
-    return data ?? null
+    const result = await api.GET("/api/auth/me")
+    // 401 — это норма, а не сбой: человек ещё не вошёл. Бросив здесь, мы бы
+    // показывали экран ошибки вместо формы входа.
+    if (result.response.status === 401) return null
+    // Всё остальное — через unwrap, как и любой другой вызов api. Раньше
+    // здесь стояло `data ?? null`, и это был единственный вызов мимо
+    // unwrap: 500, 502 и обрыв связи давали то же самое null, что и «не
+    // вошёл», роутер уводил на форму входа, и лежащий бэкенд был
+    // неотличим от незалогиненного человека. Владелец в этот момент
+    // набирает верный пароль и получает молчание.
+    return unwrap(result)
   },
   retry: false,
   staleTime: 30_000,
@@ -8819,6 +8825,8 @@ import {
 } from "@tanstack/react-router"
 import type { QueryClient } from "@tanstack/react-query"
 import { currentUserQuery } from "@/lib/auth"
+import { PageMain } from "@/components/page-main"
+import { RequestFailure } from "@/components/request-failure"
 import { SiteNav } from "@/components/site-nav"
 import { AuditPage } from "@/routes/audit"
 import { ExpensesPage } from "@/routes/expenses"
@@ -8855,6 +8863,17 @@ const privateRoute = createRoute({
     if (!user) throw redirect({ to: "/login" })
     return { user }
   },
+  // Отказ на пути «кто вошёл» показывается, а не уводит на форму входа.
+  // Запрос отвечает null только на 401 — «не вошёл», — а всё остальное
+  // (500, 502, обрыв) бросает; без этого экрана бросок дошёл бы до
+  // умолчания роутера, а оно написано по-английски и для разработчика.
+  // Переброс на /login сюда не попадает: роутер разбирает его до
+  // errorComponent.
+  errorComponent: ({ error }) => (
+    <PageMain>
+      <RequestFailure title="Приложение не отвечает" error={error} />
+    </PageMain>
+  ),
   component: function PrivateLayout() {
     const { user } = privateRoute.useRouteContext()
     return (
@@ -11101,12 +11120,36 @@ test("роль editor правит расходы, но раздел «Люди�
   await page.getByRole("button", { name: "Добавить" }).click()
   await expect(page.getByRole("cell", { name: title })).toBeVisible()
 })
+
+test("лежащий бэкенд показывает отказ, а не форму входа", async ({ page }) => {
+  // Разница между «вы не вошли» и «сервер не отвечает» дороже, чем кажется:
+  // первое человек лечит паролем, второе — звонком. Пока запрос «кто вошёл»
+  // читался как `data ?? null`, 500 и 502 давали то же самое null, что и
+  // 401, роутер уводил на форму входа, и владелец набирал верный пароль
+  // снова и снова. Это был единственный вызов api мимо `unwrap`.
+  //
+  // Отказ подставляется браузером, а не остановкой сервера: сервер общий на
+  // весь прогон, и его остановка уронила бы соседние сценарии.
+  await page.route("**/api/auth/me", (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Что-то пошло не так" }),
+    })
+  )
+
+  await page.goto("/")
+
+  await expect(page.getByText("Приложение не отвечает")).toBeVisible()
+  await expect(page.getByText("Что-то пошло не так")).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Вход" })).toHaveCount(0)
+})
 ```
 
 - [ ] **Шаг 4: Прогнать**
 
 Run: `cd frontend && DATABASE_URL_E2E=postgresql://... npx playwright test`
-Expected: 5 passed
+Expected: 6 passed
 
 Проверить мутациями — по одной, возвращая исходное состояние:
 
@@ -11115,6 +11158,8 @@ Expected: 5 passed
 | в `site-nav.tsx` ссылка «Люди» выдана роли `viewer` | оба ролевых сценария |
 | в `site-nav.tsx` ссылка «Люди» выдана роли `editor` | только сценарий editor |
 | в `expenses.tsx` `canWrite` поднят до `admin` | сценарий editor — форма расходов не показана |
+| в `auth.ts` `unwrap(result)` заменён на `result.data ?? null` | «лежащий бэкенд показывает отказ» — экран снова уводит на форму входа |
+| из `router.tsx` убран `errorComponent` закрытой части | тот же сценарий: бросок доходит до умолчания роутера |
 | убрана строка `await expect(page.getByRole("link", { name: "Расходы" })).toBeVisible()` | ничего, и это причина, по которой она есть: `toHaveCount(0)` сходится на ещё не отрисованной странице, и мутация со ссылкой для `editor` проходила мимо |
 
 - [ ] **Шаг 5: Коммит**
@@ -11254,7 +11299,7 @@ test("изменение попадает в журнал", async ({ page }) => 
 - [ ] **Шаг 2: Прогнать все e2e**
 
 Run: `cd frontend && npx playwright test`
-Expected: 10 passed
+Expected: 11 passed
 
 Проверить мутациями — по одной, возвращая исходное состояние:
 
@@ -11741,6 +11786,15 @@ cp /Users/minas/projects/app-template/AGENTS.md AGENTS.md
   запроса и отказ мутации показываются через
   `frontend/src/components/request-failure.tsx` (`<RequestFailure>`), а не
   пустым состоянием и не молчанием.
+
+  Единственная развилка ПЕРЕД `unwrap` — запрос «кто вошёл» в
+  `frontend/src/lib/auth.ts`: 401 там значит «человек не вошёл» и
+  превращается в `null`, чтобы роутер показал форму входа. Всё остальное
+  бросает, и закрытая часть показывает отказ (`errorComponent` в
+  `frontend/src/router.tsx`). Развилка именно на коде 401, а не на пустых
+  данных: с `data ?? null` лежащий бэкенд был неотличим от незалогиненного
+  человека — владелец набирал верный пароль и снова оказывался на форме
+  входа. Сторожит это сквозной сценарий «лежащий бэкенд показывает отказ».
 - Ошибка поля формы рисуется под своим полем, общая (`root`) — алертом.
   Список алертов под формой не показывает, к какому вводу относится
   сообщение.

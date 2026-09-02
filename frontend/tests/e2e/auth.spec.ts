@@ -143,3 +143,27 @@ test("роль editor правит расходы, но раздел «Люди�
   await page.getByRole("button", { name: "Добавить" }).click()
   await expect(page.getByRole("cell", { name: title })).toBeVisible()
 })
+
+test("лежащий бэкенд показывает отказ, а не форму входа", async ({ page }) => {
+  // Разница между «вы не вошли» и «сервер не отвечает» дороже, чем кажется:
+  // первое человек лечит паролем, второе — звонком. Пока запрос «кто вошёл»
+  // читался как `data ?? null`, 500 и 502 давали то же самое null, что и
+  // 401, роутер уводил на форму входа, и владелец набирал верный пароль
+  // снова и снова. Это был единственный вызов api мимо `unwrap`.
+  //
+  // Отказ подставляется браузером, а не остановкой сервера: сервер общий на
+  // весь прогон, и его остановка уронила бы соседние сценарии.
+  await page.route("**/api/auth/me", (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Что-то пошло не так" }),
+    })
+  )
+
+  await page.goto("/")
+
+  await expect(page.getByText("Приложение не отвечает")).toBeVisible()
+  await expect(page.getByText("Что-то пошло не так")).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Вход" })).toHaveCount(0)
+})

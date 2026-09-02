@@ -1,5 +1,5 @@
 import { queryOptions } from "@tanstack/react-query"
-import { api } from "@/api/client"
+import { api, unwrap } from "@/api/client"
 import type { components } from "@/api/schema"
 
 /**
@@ -29,11 +29,17 @@ export function hasRank(actual: Role, required: Role): boolean {
 export const currentUserQuery = queryOptions({
   queryKey: ["auth", "me"],
   queryFn: async (): Promise<CurrentUser | null> => {
-    const { data, response } = await api.GET("/api/auth/me")
-    // 401 — это норма, а не сбой: человек ещё не вошёл. Бросив здесь,
-    // мы бы показывали экран ошибки вместо формы входа.
-    if (response.status === 401) return null
-    return data ?? null
+    const result = await api.GET("/api/auth/me")
+    // 401 — это норма, а не сбой: человек ещё не вошёл. Бросив здесь, мы бы
+    // показывали экран ошибки вместо формы входа.
+    if (result.response.status === 401) return null
+    // Всё остальное — через unwrap, как и любой другой вызов api. Раньше
+    // здесь стояло `data ?? null`, и это был единственный вызов мимо
+    // unwrap: 500, 502 и обрыв связи давали то же самое null, что и «не
+    // вошёл», роутер уводил на форму входа, и лежащий бэкенд был
+    // неотличим от незалогиненного человека. Владелец в этот момент
+    // набирает верный пароль и получает молчание.
+    return unwrap(result)
   },
   retry: false,
   staleTime: 30_000,

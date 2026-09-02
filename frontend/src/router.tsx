@@ -9,6 +9,8 @@ import {
 } from "@tanstack/react-router"
 import type { QueryClient } from "@tanstack/react-query"
 import { currentUserQuery } from "@/lib/auth"
+import { PageMain } from "@/components/page-main"
+import { RequestFailure } from "@/components/request-failure"
 import { SiteNav } from "@/components/site-nav"
 import { AuditPage } from "@/routes/audit"
 import { ExpensesPage } from "@/routes/expenses"
@@ -45,6 +47,17 @@ const privateRoute = createRoute({
     if (!user) throw redirect({ to: "/login" })
     return { user }
   },
+  // Отказ на пути «кто вошёл» показывается, а не уводит на форму входа.
+  // Запрос отвечает null только на 401 — «не вошёл», — а всё остальное
+  // (500, 502, обрыв) бросает; без этого экрана бросок дошёл бы до
+  // умолчания роутера, а оно написано по-английски и для разработчика.
+  // Переброс на /login сюда не попадает: роутер разбирает его до
+  // errorComponent.
+  errorComponent: ({ error }) => (
+    <PageMain>
+      <RequestFailure title="Приложение не отвечает" error={error} />
+    </PageMain>
+  ),
   component: function PrivateLayout() {
     const { user } = privateRoute.useRouteContext()
     return (
