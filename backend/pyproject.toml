@@ -20,6 +20,8 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.52",
     "asyncpg>=0.31",
     "alembic>=1.19",
+    "pandas>=3.0.5",
+    "openpyxl>=3.1.5",
 ]
 
 [dependency-groups]
@@ -29,6 +31,12 @@ dev = [
     "pytest>=9.1",
     "pytest-asyncio>=1.4",
     "httpx>=0.28",
+    # Типы для pandas. Сам pandas их не везёт (нет py.typed), и под `strict`
+    # mypy отказывается разбирать модуль вовсе — весь `domain/tables.py`
+    # остался бы непроверенным, а опечатка в имени аргумента `read_csv`
+    # находилась бы только тестом. Пакет отдельный и версией привязан к
+    # версии pandas: обновляя одно, обновляй второе.
+    "pandas-stubs>=3.0.5.260730",
 ]
 # Отдельная группа, а НЕ dev. `uv sync` без флагов ставит dev по умолчанию, и
 # import-linter утянул бы за собой grimp, у которого нет колеса под cp314 на
