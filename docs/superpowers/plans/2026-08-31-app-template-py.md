@@ -10830,6 +10830,12 @@ git commit -m "feat: экраны входа, расходов, людей, жу
 ```bash
 cd frontend && npm install -D @playwright/test && npx playwright install chromium
 ```
+
+- [ ] **Шаг 2: Написать конфигурацию**
+
+Create `frontend/playwright.config.ts`:
+
+```ts
 import { existsSync } from "node:fs"
 import { defineConfig } from "@playwright/test"
 
@@ -10944,6 +10950,12 @@ export default defineConfig({
   },
 })
 ```
+
+- [ ] **Шаг 3: Написать смоук входа и ролей**
+
+Create `frontend/tests/e2e/auth.spec.ts`:
+
+```ts
 import { expect, test } from "@playwright/test"
 
 // Данные создаются внутри теста, а не берутся из сида: тест, зависящий от
@@ -11019,6 +11031,13 @@ test("роль viewer не видит раздел «Люди» и не попа
   // есть тест проходил бы, ничего не проверив.
   await page.waitForURL("/")
 
+  // Сначала опора, потом отсутствие. `toHaveCount(0)` сходится и на ещё не
+  // отрисованной странице: адрес меняет роутер, а меню React дорисовывает
+  // после — то есть проверка «ссылки нет» проходила бы и на пустом экране.
+  // Показано мутацией: ссылка «Люди», выданная роли editor, оставляла
+  // сценарий зелёным. Видимая соседняя ссылка означает, что меню уже здесь и
+  // отсутствие «Людей» — настоящее.
+  await expect(page.getByRole("link", { name: "Расходы" })).toBeVisible()
   await expect(page.getByRole("link", { name: "Люди" })).toHaveCount(0)
 
   // Вторая половина названия: по прямому адресу viewer в раздел тоже не
@@ -11029,12 +11048,74 @@ test("роль viewer не видит раздел «Люди» и не попа
   await expect(page.getByRole("button", { name: "Завести" })).toHaveCount(0)
   await expect(page.getByText("Недостаточно прав")).toBeVisible()
 })
+
+test("роль editor правит расходы, но раздел «Люди» ей не показан", async ({
+  page,
+}) => {
+  // Средняя роль не была покрыта сквозным сценарием вовсе: все прочие
+  // входят под admin, а единственный ролевой сценарий проверяет viewer. То
+  // есть «editor правит расходы, но людьми не управляет» держали только
+  // API-тесты, и разъехаться клиентский гейт с сервером мог молча —
+  // например, потеряв editor в списке ролей формы.
+  const login = unique()
+
+  await page.goto("/login")
+  await page.getByLabel("Логин").fill("admin")
+  await page.getByLabel("Пароль").fill("admin")
+  await page.getByRole("button", { name: "Войти" }).click()
+  await page.waitForURL("/")
+
+  await page.goto("/users")
+  await page.getByLabel("Логин").fill(login)
+  await page.getByLabel("Имя").fill("Правящий")
+  // Роль выбирается явно: по умолчанию форма заводит viewer, и без этого
+  // клика сценарий проверял бы вторую копию соседнего теста.
+  //
+  // Локатор по роли элемента, а не getByLabel("Роль"): подписи сопоставляются
+  // подстрокой без учёта регистра, и «Роль» находится внутри «Пароль» — два
+  // совпадения и отказ strict mode. Проверено, падало ровно так.
+  await page.getByRole("combobox", { name: "Роль" }).click()
+  await page.getByRole("option", { name: "Правит" }).click()
+  await page.getByLabel("Пароль").fill("длинныйпароль")
+  await page.getByRole("button", { name: "Завести" }).click()
+  await expect(page.getByRole("cell", { name: login })).toBeVisible()
+
+  await page.getByRole("button", { name: "Выйти" }).click()
+  await page.waitForURL("/login")
+  await page.getByLabel("Логин").fill(login)
+  await page.getByLabel("Пароль").fill("длинныйпароль")
+  await page.getByRole("button", { name: "Войти" }).click()
+  await page.waitForURL("/")
+
+  // Опора перед отсутствием — по той же причине, что и в сценарии viewer.
+  await expect(page.getByRole("link", { name: "Расходы" })).toBeVisible()
+  await expect(page.getByRole("link", { name: "Люди" })).toHaveCount(0)
+
+  // Главное отличие от viewer: форма расходов показана, и расход
+  // действительно сохраняется — то есть бэкенд тоже пустил.
+  await page.goto("/expenses")
+  const title = `Правка ${Date.now()}`
+  await page.getByLabel("Дата").fill("2026-08-31")
+  await page.getByLabel("Назначение").fill(title)
+  await page.getByLabel("Сумма").fill("321")
+  await page.getByRole("button", { name: "Добавить" }).click()
+  await expect(page.getByRole("cell", { name: title })).toBeVisible()
+})
 ```
 
 - [ ] **Шаг 4: Прогнать**
 
 Run: `cd frontend && DATABASE_URL_E2E=postgresql://... npx playwright test`
-Expected: 4 passed
+Expected: 5 passed
+
+Проверить мутациями — по одной, возвращая исходное состояние:
+
+| Мутация | Ожидаемый красный |
+|---|---|
+| в `site-nav.tsx` ссылка «Люди» выдана роли `viewer` | оба ролевых сценария |
+| в `site-nav.tsx` ссылка «Люди» выдана роли `editor` | только сценарий editor |
+| в `expenses.tsx` `canWrite` поднят до `admin` | сценарий editor — форма расходов не показана |
+| убрана строка `await expect(page.getByRole("link", { name: "Расходы" })).toBeVisible()` | ничего, и это причина, по которой она есть: `toHaveCount(0)` сходится на ещё не отрисованной странице, и мутация со ссылкой для `editor` проходила мимо |
 
 - [ ] **Шаг 5: Коммит**
 
@@ -11042,6 +11123,19 @@ Expected: 4 passed
 git add frontend/playwright.config.ts frontend/tests/
 git commit -m "test: сквозной смоук входа и разграничения прав"
 ```
+
+---
+
+### Задача 34: Смоук образцовой фичи
+
+**Files:**
+- Create: `frontend/tests/e2e/expenses.spec.ts`
+
+- [ ] **Шаг 1: Написать сценарии расходов**
+
+Create `frontend/tests/e2e/expenses.spec.ts`:
+
+```ts
 import { expect, test } from "@playwright/test"
 
 test.beforeEach(async ({ page }) => {
@@ -11128,23 +11222,47 @@ test("сводка обновляется вместе с таблицей", asy
 
 test("изменение попадает в журнал", async ({ page }) => {
   const title = `В журнал ${Date.now()}`
+  // Сумма уникальна для прогона, и она единственное, что связывает запись
+  // журнала с этим расходом: назначения журнал не показывает — в подробности
+  // уезжает «<категория>, <копейки> коп.».
+  //
+  // Раньше проверка искала ячейку «admin» и слово «создание» по всей таблице,
+  // ни с чем их не связывая. Такую же пару оставляет заведение учётной записи
+  // в соседнем сценарии, а база e2e между прогонами не чистится — то есть
+  // проверка оставалась бы зелёной, даже если бы этот расход в журнал не
+  // попал вовсе. Воспроизведено ревью.
+  const kopecks = 100_000 + Math.floor(Math.random() * 800_000)
+  const amount = (kopecks / 100).toFixed(2).replace(".", ",")
 
   await page.getByLabel("Дата").fill("2026-08-31")
   await page.getByLabel("Назначение").fill(title)
-  await page.getByLabel("Сумма").fill("500")
+  await page.getByLabel("Сумма").fill(amount)
   await page.getByRole("button", { name: "Добавить" }).click()
   await expect(page.getByRole("cell", { name: title })).toBeVisible()
 
   await page.goto("/audit")
-  await expect(page.getByRole("cell", { name: "admin" }).first()).toBeVisible()
-  await expect(page.getByText("создание").first()).toBeVisible()
+  // «Софт» — категория по умолчанию в форме. Вместе с суммой она даёт целую
+  // строку подробностей, а не подстроку внутри чужого числа.
+  const row = page.getByRole("row").filter({ hasText: `Софт, ${kopecks} коп.` })
+  await expect(row).toHaveCount(1)
+  await expect(row.getByRole("cell", { name: "admin" })).toBeVisible()
+  await expect(row.getByRole("cell", { name: "создание" })).toBeVisible()
+  await expect(row.getByRole("cell", { name: "расход" })).toBeVisible()
 })
 ```
 
 - [ ] **Шаг 2: Прогнать все e2e**
 
 Run: `cd frontend && npx playwright test`
-Expected: 9 passed
+Expected: 10 passed
+
+Проверить мутациями — по одной, возвращая исходное состояние:
+
+| Мутация | Ожидаемый красный |
+|---|---|
+| из `create_expense` убран `write_audit` | «изменение попадает в журнал» — строки с суммой этого расхода в журнале нет |
+| в `audit.tsx` из `ENTITY_LABEL` убран ключ `Expense` | тот же сценарий: в строке «расход», а не `Expense` |
+| поиск строки журнала по «admin» и «создание» без привязки к сумме | ничего: такую же запись оставляет заведение учётной записи в соседнем сценарии, и при выключенном `write_audit` проверка остаётся зелёной. Воспроизведено — 5 passed на сломанном коде |
 
 - [ ] **Шаг 3: Коммит**
 

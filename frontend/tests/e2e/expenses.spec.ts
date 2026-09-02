@@ -84,14 +84,30 @@ test("сводка обновляется вместе с таблицей", asy
 
 test("изменение попадает в журнал", async ({ page }) => {
   const title = `В журнал ${Date.now()}`
+  // Сумма уникальна для прогона, и она единственное, что связывает запись
+  // журнала с этим расходом: назначения журнал не показывает — в подробности
+  // уезжает «<категория>, <копейки> коп.».
+  //
+  // Раньше проверка искала ячейку «admin» и слово «создание» по всей таблице,
+  // ни с чем их не связывая. Такую же пару оставляет заведение учётной записи
+  // в соседнем сценарии, а база e2e между прогонами не чистится — то есть
+  // проверка оставалась бы зелёной, даже если бы этот расход в журнал не
+  // попал вовсе. Воспроизведено ревью.
+  const kopecks = 100_000 + Math.floor(Math.random() * 800_000)
+  const amount = (kopecks / 100).toFixed(2).replace(".", ",")
 
   await page.getByLabel("Дата").fill("2026-08-31")
   await page.getByLabel("Назначение").fill(title)
-  await page.getByLabel("Сумма").fill("500")
+  await page.getByLabel("Сумма").fill(amount)
   await page.getByRole("button", { name: "Добавить" }).click()
   await expect(page.getByRole("cell", { name: title })).toBeVisible()
 
   await page.goto("/audit")
-  await expect(page.getByRole("cell", { name: "admin" }).first()).toBeVisible()
-  await expect(page.getByText("создание").first()).toBeVisible()
+  // «Софт» — категория по умолчанию в форме. Вместе с суммой она даёт целую
+  // строку подробностей, а не подстроку внутри чужого числа.
+  const row = page.getByRole("row").filter({ hasText: `Софт, ${kopecks} коп.` })
+  await expect(row).toHaveCount(1)
+  await expect(row.getByRole("cell", { name: "admin" })).toBeVisible()
+  await expect(row.getByRole("cell", { name: "создание" })).toBeVisible()
+  await expect(row.getByRole("cell", { name: "расход" })).toBeVisible()
 })
