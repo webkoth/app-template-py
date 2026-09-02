@@ -578,3 +578,64 @@ async def test_revoked_session_stops_working(client, session, login_as):
     user.sessions_valid_from = datetime.now(UTC)
     await session.commit()
     assert (await client.get("/api/auth/me")).status_code == 401
+
+
+async def test_disabled_account_stops_working_without_waiting_for_revocation(
+    client, session, login_as
+):
+    """Отключение действует и на куку, выданную раньше отметки отзыва.
+
+    Отключение учётной записи ставит `sessions_valid_from`, и в обычном
+    порядке (сначала выдали куку, потом отключили) человека выгоняет именно
+    отзыв. Но порядок бывает и другим: администратор отключает запись в тот
+    самый момент, когда та входит, — и кука оказывается выдана позже отметки,
+    то есть отзыву не подлежит. Держит этот случай отдельная проверка статуса
+    в `get_current_user`, и до этого теста её не держало ничто: без строки
+    `or user.status is not UserStatus.active` все 244 теста оставались
+    зелёными. Воспроизведено ревью.
+
+    Отметка здесь намеренно не ставится вовсе: так проверяется именно
+    статус, а не отзыв, — иначе тест остался бы зелёным на коде, из которого
+    проверку статуса убрали.
+    """
+    user = await login_as(login="ivan")
+    assert (await client.get("/api/auth/me")).status_code == 200
+
+    user.status = UserStatus.disabled
+    await session.commit()
+
+    assert (await client.get("/api/auth/me")).status_code == 401
+
+
+async def test_denied_access_reaches_the_server_log(client, login_as, caplog):
+    """Отказ по правам обязан оставлять след.
+
+    `AGENTS.md` обещает: «Отказ попадает в серверный лог, который смотрят
+    через `/logs`». В журнал аудита такие отказы не пишутся намеренно — там
+    мутации данных, — поэтому серверный лог единственный канал, из которого
+    видно попытки обойти права. Без `logger.warning` в `require_role` все
+    244 теста оставались зелёными, и обещание держалось только на честном
+    слове. Воспроизведено ревью.
+
+    Проверяется и текст: запись «доступ отклонён» без логина и без роли
+    отвечает на вопрос «случилось ли», но не на «кто и куда лез», а читают
+    её ровно ради второго.
+    """
+    await login_as(role=Role.viewer, login="ivan")
+
+    with caplog.at_level(logging.WARNING, logger="app.core.deps"):
+        response = await client.get("/api/users")
+
+    assert response.status_code == 403
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.core.deps" and record.levelno >= logging.WARNING
+    ]
+    assert messages, (
+        "отказ по правам не попал в серверный лог — про попытки обойти права "
+        "не узнает никто: в журнал аудита они не пишутся"
+    )
+    assert any("ivan" in message and "viewer" in message for message in messages), (
+        f"в логе нет ни логина, ни роли: {messages}"
+    )
