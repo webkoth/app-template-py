@@ -11602,6 +11602,26 @@ jobs:
       - name: Упаковать статику и версию
         run: tar -czf dist.tar.gz -C frontend dist -C ../ build-info.json
 
+      # Проверка до всякой работы. Без секретов доставка падает на `scp
+      # deploy@:` — с пустым адресом, вычищенным ключом и без единого слова
+      # о причине. А приходит это состояние к каждому, кто сделал проект из
+      # шаблона и запушил main раньше, чем завёл контур: первый же push
+      # даёт красный крест и сообщение, отправляющее читать про scp.
+      - name: Контур заведён
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          missing=""
+          [ -n "$SERVER_HOST" ] || missing="$missing SERVER_HOST"
+          [ -n "$DEPLOY_SSH_KEY" ] || missing="$missing DEPLOY_SSH_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Контур не заведён: нет секретов$missing." \
+              "Проверки пройдены, доставлять некуда." \
+              "Заведи контур командой /onboarding — шаги G и H."
+            exit 1
+          fi
+
       - name: Доставка на контур
         run: |
           mkdir -p ~/.ssh
