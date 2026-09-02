@@ -80,7 +80,8 @@ def test_repo_root_points_at_the_repository():
 
 
 async def test_build_info_requires_login(client):
-    # Спецификация: /api/health — единственный маршрут без авторизации.
+    # Совсем без авторизации живут три маршрута — проверка живости, вход и
+    # выход; полный список с объяснениями держит test_route_guards.py.
     # Анонимный build-info отдавал точный задеплоенный коммит; потребителей
     # у маршрута нет ни одного, так что закрыть его ничего не стоит.
     response = await client.get("/api/meta/build-info")
