@@ -745,10 +745,15 @@ check-frontend: check-openapi
 
 # Расхождение контракта ловится здесь: бэкенд поменял схему, фронт не
 # перегенерировал типы — красный прогон на ветке, а не сюрприз в бою.
+#
+# diff -u, а не -q: на совпадении оба молчат, а на расхождении -q печатает
+# только «файлы различаются». В логе прогона это тупик — что именно уехало,
+# видно лишь на своей машине, а смотрит туда как раз тот, у кого расхождение
+# воспроизвелось только в CI.
 check-openapi:
 	cd backend && uv run python -m app.openapi > /tmp/openapi.json
 	cd frontend && npx openapi-typescript /tmp/openapi.json -o src/api/schema.d.ts.new
-	@diff -q frontend/src/api/schema.d.ts frontend/src/api/schema.d.ts.new > /dev/null \
+	@diff -u frontend/src/api/schema.d.ts frontend/src/api/schema.d.ts.new \
 		|| { rm -f frontend/src/api/schema.d.ts.new; \
 		     echo "Типы клиента разошлись со схемой. Выполни: make openapi"; \
 		     exit 1; }
@@ -2171,7 +2176,9 @@ psql "$(grep '^DATABASE_URL=' .env | sed 's/DATABASE_URL=//;s/\"//g')" \
   -tAc 'SELECT current_user, current_database()'
 ```
 
-Ожидается `apptemplate|apptemplatepy_dev`.
+Ожидается `apptemplatepy|apptemplatepy_dev`. Первое поле — роль из строки
+подключения, а не имя пользователя системы; именно оно и подтверждает, что
+`CREATE ROLE` не пропущен.
 
 Если `createdb` не найден — PostgreSQL 18 не установлен; поставить через
 `brew install postgresql@18` (macOS) или `apt install postgresql-18` (Ubuntu).
@@ -7114,6 +7121,7 @@ git commit -m "feat: образцовая фича расходов"
 - Create: `backend/app/openapi.py`
 - Create: `backend/tests/api/test_audit.py`
 - Create: `backend/tests/unit/test_static.py`
+- Create: `backend/tests/api/test_route_guards.py`
 
 - [ ] **Шаг 1: Написать падающий тест**
 
@@ -7662,7 +7670,278 @@ if __name__ == "__main__":
 Run: `cd backend && uv run pytest -v`
 Expected: PASS — все тесты фаз 1–4 зелёные.
 
-- [ ] **Шаг 8: Добавить последний контракт границ**
+- [ ] **Шаг 8: Тест, который сторожит проверку доступа на каждом маршруте**
+
+Правило «`require_role` на каждом маршруте» — обещание из `AGENTS.md`, и до
+этого шага его не держит ничто. Проверено мутацией: маршрут
+`GET /api/expenses/all-raw` вообще без авторизации проходит ruff, mypy,
+import-linter и все остальные тесты. Красной становится одна сверка типов
+клиента — а лечится она командой `make openapi`, после которой прогон
+зелёный, и открытый маршрут уезжает на публичный контур.
+
+Забыть тут легко: `= EditorDep` — это значение параметра по умолчанию, а не
+аргумент декоратора, и в дифе его отсутствие не бросается в глаза.
+
+Create `backend/tests/api/test_route_guards.py`:
+
+```python
+"""Каждый маршрут приложения проверяет доступ.
+
+`AGENTS.md` обещает `require_role` на каждом маршруте, и до этого файла
+обещание не держалось ничем. Маршрут, у которого забыли `= EditorDep`,
+проходил ruff, mypy, import-linter и все остальные тесты: это значение
+параметра по умолчанию, а не аргумент декоратора, и в дифе его отсутствие
+не бросается в глаза. Красным становилась одна сверка типов клиента — а
+лечится она командой `make openapi`, после которой прогон зелёный, а
+маршрут уезжает на публичный контур открытым. Воспроизведено ревью.
+
+Проверка идёт не по тексту роутеров, а по дереву зависимостей, которое
+FastAPI построил на самом деле (`Dependant.dependencies` рекурсивно). Так
+считаются обе формы записи — и `_: CurrentUser = ViewerDep` в сигнатуре, и
+`dependencies=[Depends(...)]` у декоратора, — и не считается комментарий,
+похожий на защиту.
+
+«Совсем открыт» и «нужен вход» — разные вещи, и списка здесь два. Маршрут с
+`CurrentUserDep` пускает любого вошедшего, включая `viewer`, но анонима не
+пускает. Держи их в одном списке — и тест перестал бы отличать «решили
+пускать всех» от «решили пускать всех вошедших»; первое на контуре, открытом
+в интернет, означает совсем не то же самое, что второе.
+"""
+
+from collections.abc import Iterator, Sequence
+from typing import Any, NamedTuple
+
+from starlette.routing import Mount
+
+from app.core.deps import get_current_user, require_role
+from app.core.static import DIST
+from app.domain.roles import Role
+from app.main import app
+
+# Маршруты, открытые СОВСЕМ: ни роли, ни входа. Каждый — по устройству, и
+# рядом сказано почему. Пополнять этот список — решение, а не формальность:
+# всё, что сюда попало, доступно любому, кто знает адрес контура.
+FULLY_OPEN = {
+    "GET /api/health": (
+        "проверку живости зовут доставка и монитор, сессии у них нет; "
+        "закрытая проверка означала бы, что контур некому опросить"
+    ),
+    "POST /api/auth/login": "выдаёт сессию — требовать сессию нечем",
+    "POST /api/auth/logout": (
+        "гасить куку надо и тогда, когда она уже недействительна; "
+        "закрытый выход оставлял бы человека с мёртвой кукой в браузере"
+    ),
+}
+
+# Требуют входа, но не роли: пускают любого вошедшего, включая `viewer`.
+LOGIN_ONLY = {
+    "GET /api/auth/me": (
+        "отдаёт данные самого вошедшего; роль здесь и проверять не по чему — "
+        "экран узнаёт её именно отсюда"
+    ),
+    "GET /api/meta/build-info": (
+        "версия доставленного кода; анониму знать её незачем, а вошедшему "
+        "нужна любому — по ней разбирают, что именно сейчас на контуре"
+    ),
+    "GET /api/meta/docs/{name}": (
+        "правила и тексты команд из репозитория; их читает экран /docs, "
+        "открытый всем вошедшим"
+    ),
+}
+
+# Перехватчик SPA и статика сборки. Оба существуют только при собранном
+# фронтенде (`mount_frontend` выходит первой строкой, когда `frontend/dist`
+# нет), поэтому ожидание считается по диску, а не задаётся константой: в CI
+# бэкенд-тесты идут до `npm run build`, и там этих маршрутов не будет.
+SPA_FALLBACK = "GET /{path:path}"
+SPA_ASSETS = "/assets"
+
+
+class Guards(NamedTuple):
+    fully_open: set[str]
+    login_only: set[str]
+    role_guarded: set[str]
+    mounts: set[str]
+    unknown: set[str]
+
+
+def _leaves(nodes: Sequence[Any]) -> Iterator[Any]:
+    """Разворачивает дерево маршрутизации до листьев.
+
+    `app.routes` — не плоский список. Начиная с FastAPI 0.141 `include_router`
+    кладёт туда обёртку над роутером, а не копии маршрутов с готовым путём.
+    Обёртка отдаёт свои листья вместе с уже склеенным путём и с
+    зависимостями, которые навесил сам `include_router`; склеивать префиксы
+    руками значило бы повторять чужую работу и однажды разойтись с ней.
+
+    Наивный `for r in app.routes: if isinstance(r, APIRoute)` здесь не падает,
+    а молча находит один маршрут из четырнадцати — перехватчик SPA. Тест на
+    таком обходе был бы вечнозелёным. Поэтому ниже списки сверяются на
+    равенство в обе стороны: обход, недосчитавшийся маршрутов, даёт красный,
+    а не тишину.
+    """
+    for node in nodes:
+        children = getattr(node, "effective_candidates", None)
+        if children is None:
+            yield node
+        else:
+            yield from _leaves(children())
+
+
+def _dependencies(dependant: Any) -> Iterator[Any]:
+    """Все зависимости маршрута, включая вложенные.
+
+    Рекурсия обязательна: `require_role` возвращает замыкание, которое само
+    зависит от `get_current_user`, и на первом уровне лежит только оно.
+    """
+    for sub in dependant.dependencies:
+        yield sub
+        yield from _dependencies(sub)
+
+
+def _is_role_guard(call: object) -> bool:
+    """Зависимость ли это, которую вернул `require_role`.
+
+    Опознаётся по модулю и `__qualname__` замыкания, и оба берутся у самого
+    `require_role`, а не выписаны строкой. Переименование внутренней функции
+    проверку не ломает; переименование или переезд самого `require_role`
+    ломает — и ломает громко, отдельным тестом ниже, а не молчаливым «защиты
+    нет ни у кого».
+    """
+    module = getattr(call, "__module__", None)
+    qualname = getattr(call, "__qualname__", "")
+    prefix = f"{require_role.__qualname__}.<locals>."
+    return module == require_role.__module__ and qualname.startswith(prefix)
+
+
+def _collect() -> Guards:
+    guards = Guards(set(), set(), set(), set(), set())
+    for node in _leaves(app.routes):
+        if isinstance(node, Mount):
+            guards.mounts.add(node.path)
+            continue
+        if not hasattr(node, "dependant") or not hasattr(node, "methods"):
+            guards.unknown.add(repr(node))
+            continue
+
+        calls = [sub.call for sub in _dependencies(node.dependant)]
+        needs_login = any(call is get_current_user for call in calls)
+        needs_role = any(_is_role_guard(call) for call in calls)
+
+        for method in node.methods:
+            name = f"{method} {node.path}"
+            if needs_role:
+                guards.role_guarded.add(name)
+            elif needs_login:
+                guards.login_only.add(name)
+            else:
+                guards.fully_open.add(name)
+    return guards
+
+
+def _expected_open() -> set[str]:
+    return set(FULLY_OPEN) | ({SPA_FALLBACK} if DIST.exists() else set())
+
+
+def test_role_guard_is_recognised():
+    # Опора всей проверки: если распознавание сломается, красным станет этот
+    # тест с понятным именем, а не четырнадцать чужих.
+    assert _is_role_guard(require_role(Role.viewer))
+    assert not _is_role_guard(get_current_user)
+
+
+def test_no_route_is_open_by_accident():
+    open_routes = _collect().fully_open
+    expected = _expected_open()
+
+    unexpected = sorted(open_routes - expected)
+    assert not unexpected, (
+        f"Маршрут открыт без единой проверки доступа: {', '.join(unexpected)}. "
+        "Добавь зависимость роли (`_: CurrentUser = ViewerDep` и подобные). "
+        "Если маршрут открыт намеренно — впиши его в FULLY_OPEN этого файла "
+        "вместе с объяснением, почему он открыт."
+    )
+
+    missing = sorted(expected - open_routes)
+    assert not missing, (
+        f"Маршруты из FULLY_OPEN не найдены: {', '.join(missing)}. "
+        "Либо их переименовали или удалили — тогда поправь список, либо обход "
+        "маршрутов перестал их видеть, и тогда проверка ничего не проверяет."
+    )
+
+
+def test_routes_without_role_check_require_at_least_a_login():
+    login_only = _collect().login_only
+    expected = set(LOGIN_ONLY)
+
+    unexpected = sorted(login_only - expected)
+    assert not unexpected, (
+        f"Маршрут пускает любого вошедшего, роль не проверяется: "
+        f"{', '.join(unexpected)}. Это отдельное решение, а не мелочь: "
+        "`viewer` увидит то же, что `admin`. Добавь `require_role` или впиши "
+        "маршрут в LOGIN_ONLY с объяснением."
+    )
+
+    missing = sorted(expected - login_only)
+    assert not missing, (
+        f"Маршруты из LOGIN_ONLY не найдены: {', '.join(missing)}. "
+        "Проверь, не переименовали ли их и видит ли их обход."
+    )
+
+
+def test_the_rest_of_the_api_is_guarded_by_role():
+    guarded = _collect().role_guarded
+    # Положительная сторона проверки. Два теста выше запрещают лишнее в двух
+    # списках, но оба остались бы зелёными на обходе, который не нашёл ничего.
+    # Здесь названы маршруты каждой закрытой фичи: пропал любой — обход сломан
+    # или маршрут потерял защиту.
+    for name in (
+        "GET /api/users",
+        "POST /api/users",
+        "PATCH /api/users/{user_id}",
+        "GET /api/expenses",
+        "POST /api/expenses",
+        "DELETE /api/expenses/{expense_id}",
+        "GET /api/audit",
+    ):
+        assert name in guarded, f"{name} больше не проверяет роль"
+
+
+def test_static_mounts_are_declared():
+    # Примонтированный каталог отдаётся без всяких зависимостей: `Depends` к
+    # нему не применяется вовсе. Поэтому монтирование — тоже решение о
+    # доступе, и новое обязано быть замечено здесь, а не на контуре.
+    mounts = _collect().mounts
+    expected = {SPA_ASSETS} if DIST.exists() else set()
+    assert mounts == expected, (
+        f"Список примонтированных каталогов изменился: {sorted(mounts)}. "
+        "Всё, что смонтировано, доступно любому без входа — убедись, что там "
+        "нет ничего частного, и обнови ожидание."
+    )
+
+
+def test_every_route_kind_is_understood():
+    # Страховка обхода: маршрут неизвестного вида не проверен ничем и обязан
+    # быть замечен, а не пропущен молча.
+    unknown = sorted(_collect().unknown)
+    assert not unknown, (
+        f"Маршрут неизвестного вида, проверка доступа к нему не считана: "
+        f"{', '.join(unknown)}."
+    )
+```
+
+Проверить мутациями — по одной, возвращая исходное состояние:
+
+| Мутация | Ожидаемый красный |
+|---|---|
+| маршрут без единой зависимости | `test_no_route_is_open_by_accident` |
+| маршрут с `CurrentUserDep`, но без роли | `test_routes_without_role_check_require_at_least_a_login` |
+| у существующего маршрута убрали `= AdminDep` | `test_no_route_is_open_by_accident` и `test_the_rest_of_the_api_is_guarded_by_role` |
+| переименована внутренняя функция в `require_role` | ничего: распознавание к имени не привязано |
+| `require_role` переписан без замыкания | `test_role_guard_is_recognised` — первым, с понятным именем |
+| лишний `app.mount(...)` | `test_static_mounts_are_declared` |
+
+- [ ] **Шаг 9: Добавить последний контракт границ**
 
 Все `router.py` теперь существуют. Дописать в `backend/.importlinter`:
 
@@ -7690,7 +7969,7 @@ forbidden_modules =
     app.core.audit
 ```
 
-- [ ] **Шаг 9: Проверить границы модулей**
+- [ ] **Шаг 10: Проверить границы модулей**
 
 Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
 Expected: `Contracts: 3 kept, 0 broken.`
@@ -7698,7 +7977,7 @@ Expected: `Contracts: 3 kept, 0 broken.`
 Если третий контракт сразу broken — это не повод его ослабить. Значит роутер
 и правда лезет в модели мимо сервиса, и чинить надо роутер.
 
-- [ ] **Шаг 10: Поднять приложение руками**
+- [ ] **Шаг 11: Поднять приложение руками**
 
 ```bash
 cd backend && uv run uvicorn app.main:app --port 8000
@@ -7710,12 +7989,13 @@ curl -s -X POST http://127.0.0.1:8000/api/auth/login \
 
 Expected: `{"status":"ok"}`; вход отвечает 200 и ставит куку `app_session`.
 
-- [ ] **Шаг 11: Коммит**
+- [ ] **Шаг 12: Коммит**
 
 ```bash
 git add backend/app/features/audit/ backend/app/core/static.py \
         backend/app/main.py backend/app/openapi.py backend/.importlinter \
-        backend/tests/api/test_audit.py backend/tests/unit/test_static.py
+        backend/tests/api/test_audit.py backend/tests/unit/test_static.py \
+        backend/tests/api/test_route_guards.py
 git commit -m "feat: журнал аудита, раздача статики и сборка приложения"
 ```
 
@@ -10844,38 +11124,27 @@ jobs:
       - run: uv sync --frozen --group lint
         working-directory: backend
 
-      - run: uv run ruff format --check .
-        working-directory: backend
-      - run: uv run ruff check .
-        working-directory: backend
-      - run: uv run mypy app
-        working-directory: backend
-      - run: uv run --group lint lint-imports --config .importlinter
-        working-directory: backend
-
-      # Схема накатывается до тестов: API-тесты идут в настоящую базу.
-      - run: uv run alembic upgrade head
-        working-directory: backend
-      - run: uv run pytest
-        working-directory: backend
-
+      # npm ci обязателен ДО `make check`: половину фронтенда тот проверяет
+      # только при существующем frontend/node_modules, а без него громко
+      # отказывается работать. Порядок здесь несущий, а не косметический.
       - run: npm ci
         working-directory: frontend
-      - run: npx tsc --noEmit
-        working-directory: frontend
-      - run: npm run test
-        working-directory: frontend
 
-      # Дрейф контракта: бэкенд поменял схему, фронт не перегенерировал
-      # типы. Ловится здесь, а не в бою.
-      - name: Типы клиента совпадают со схемой
-        run: |
-          cd backend && uv run python -m app.openapi > /tmp/openapi.json
-          cd ../frontend && npx openapi-typescript /tmp/openapi.json -o /tmp/schema.d.ts
-          diff -u src/api/schema.d.ts /tmp/schema.d.ts || {
-            echo "::error::Типы клиента разошлись со схемой. Выполни: make openapi"
-            exit 1
-          }
+      # Миграции накатываются на рабочую базу — так проверяется, что они
+      # ложатся на пустую. `make check` этого не делает намеренно: API-тесты
+      # создают схему из метаданных и в ОТДЕЛЬНОЙ базе.
+      - run: uv run alembic upgrade head
+        working-directory: backend
+
+      # ОДНА строка вместо переписанного своими словами списка шагов, и это
+      # не про краткость. Конвейер, перечисляющий ruff, mypy, pytest, tsc и
+      # прочее поимённо, — это второй список тех же проверок, а два списка
+      # одного и того же расходятся всегда. На первом же прогоне так и
+      # вышло: `npm run lint` в Makefile был, в конвейере нет, и коммит с
+      # ошибкой линтера проезжал CI, если автор забыл прогнать `make check`
+      # у себя. Замерено: файл с условным useState даёт красный oxlint, а
+      # tsc, vitest и build возвращают ноль.
+      - run: make check
 
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
@@ -10958,24 +11227,24 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: uv sync --frozen --group lint
         working-directory: backend
-      - run: uv run ruff format --check .
-        working-directory: backend
-      - run: uv run ruff check .
-        working-directory: backend
-      - run: uv run mypy app
-        working-directory: backend
-      - run: uv run --group lint lint-imports --config .importlinter
-        working-directory: backend
-      - run: uv run alembic upgrade head
-        working-directory: backend
-      - run: uv run pytest
-        working-directory: backend
+
+      # npm ci обязателен ДО `make check`: половину фронтенда тот проверяет
+      # только при существующем frontend/node_modules.
       - run: npm ci
         working-directory: frontend
-      - run: npx tsc --noEmit
-        working-directory: frontend
-      - run: npm run test
-        working-directory: frontend
+
+      # Миграции — на рабочую базу: так проверяется, что они ложатся на
+      # пустую. `make check` этого не делает, API-тесты идут в отдельную базу.
+      - run: uv run alembic upgrade head
+        working-directory: backend
+
+      # Та же единственная команда, что и в ci.yml, и она здесь не лишняя:
+      # прямой push в main минуя pull request проверок ветки не проходит
+      # вовсе. Список шагов не пересказывается: иначе одних и тех же списков
+      # стало бы три (Makefile, ci.yml, deploy.yml), и разошлись бы они тем
+      # вернее.
+      - run: make check
+
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
       - run: npx playwright test
@@ -11285,7 +11554,15 @@ cp /Users/minas/projects/app-template/AGENTS.md AGENTS.md
   один раз в конце. Отдельный commit для журнала означал бы, что падение
   между двумя коммитами оставляет изменение без следа.
 - Проверка роли — зависимостью `require_role` на каждом маршруте, включая
-  те, куда интерфейс не ведёт. Ad-hoc проверок нет.
+  те, куда интерфейс не ведёт. Ad-hoc проверок нет. Исключения перечисляются
+  здесь ПОИМЁННО и двумя списками: «открыты совсем» (`/api/health`,
+  `/api/auth/login`, `/api/auth/logout`) и «требуют входа, но не роли»
+  (`/api/auth/me`, `/api/meta/build-info`, `/api/meta/docs/{name}`). Слить их
+  в один список нельзя: первый доступен любому в интернете, второй — только
+  вошедшим.
+
+  Здесь же сошлись на `backend/tests/api/test_route_guards.py` (задача 22):
+  правило держит он, а не внимательность читающего.
 
 ### Клиентский гейт — не защита
 
@@ -11359,15 +11636,33 @@ cp /Users/minas/projects/app-template/AGENTS.md AGENTS.md
 
     make check
 
-Он прогоняет обе половины: ruff, mypy, границы модулей и pytest на бэкенде,
-`tsc`, unit-тесты и сверку сгенерированных типов на фронтенде.
+Он прогоняет обе половины целиком:
 
-Их же прогоняет CI на feature-ветке — и вместе с ними e2e-смоук, которому
-нужна отдельная база и который поэтому локально запускать не обязательно
-(`cd frontend && npx playwright test`). Красный прогон останавливает ветку
-**до** merge, так что `main` не принимает коммит, который на контур не
-поедет.
+| Бэкенд | Фронтенд |
+|---|---|
+| `ruff format --check` — форматирование | сверка типов клиента со схемой (`check-openapi`) |
+| `ruff check` — линтер | `tsc -b --force` — типы |
+| `mypy app` — типы | `oxlint` — линтер |
+| `lint-imports` — границы модулей | `vitest` — unit-тесты |
+| `pytest` — unit- и API-тесты | |
+
+Конвейеры зовут **ту же самую команду** одной строкой, а не пересказывают
+этот список своими словами. Это правило, а не случайность: пока `ci.yml` и
+`deploy.yml` перечисляли шаги поимённо, они были вторым и третьим списком
+одного и того же — и разошлись, потеряв `npm run lint`. Добавляешь проверку
+— добавляй её в `Makefile`, и в CI она приедет сама.
+
+Единственное, чего в `make check` нет, — e2e-смоук: ему нужна отдельная база
+и браузер, поэтому локально он запускается отдельно
+(`cd frontend && npx playwright test`), а в конвейерах стоит своим шагом
+следом. Красный прогон останавливает ветку **до** merge, так что `main` не
+принимает коммит, который на контур не поедет.
 ```
+
+Список проверок в этом разделе обязан быть полным. Неполный опаснее
+отсутствующего: агент читает его как исчерпывающий и делает вывод, что
+чего-то в прогоне нет, — так и родилась строчка «линтер `make check` не
+зовёт» в разделе про цвета, когда линтер уже был на месте.
 
 - [ ] **Шаг 2: Написать `CLAUDE.md`**
 
@@ -11469,15 +11764,32 @@ CI колесо есть, и ничего этого не происходит.
 ```markdown
 ## Первый запуск
 
-    createdb <слаг>_dev && createdb <слаг>_e2e
+Роль заводится ПЕРВОЙ и пропуску не подлежит: строка подключения в
+`.env.example` — это `postgresql://<слаг>:<слаг>@…`, то есть вход по роли с
+паролем, а не по имени пользователя системы. Без роли `make migrate` падает
+на `role "<слаг>" does not exist`, и причину ищут в миграциях.
+
+    psql -d postgres -c "CREATE ROLE <слаг> LOGIN PASSWORD '<слаг>'"
+    createdb -O <слаг> <слаг>_dev
+    createdb -O <слаг> <слаг>_e2e
     cp .env.example .env
     # APP_AUTH_SECRET сгенерировать: openssl rand -hex 32
     make install
     make migrate
     make dev
 
-Приложение отвечает на http://127.0.0.1:5173, вход admin / admin.
+`-O` задаёт владельца при создании; отдельный `ALTER DATABASE … OWNER` не
+нужен и опасен — промахнувшись именем, легко сменить владельца чужой базы.
+Владение нужно по делу: обвязка тестов делает в базе `_e2e`
+`DROP SCHEMA public CASCADE`, и роль без владения этого не может.
+
+Приложение отвечает на http://localhost:5173, вход admin / admin.
 ```
+
+Команды создания роли и баз повторяются в трёх местах (задача 11, здесь и
+`ONBOARDING.md` в задаче 41) — при переносе легко потерять именно `CREATE
+ROLE`, и тогда установка не проходит ни на macOS, ни на Linux. Так и вышло
+на первом прогоне. Перенося блок, сверяй его с задачей 11 целиком.
 
 - [ ] **Шаг 4: Коммит**
 
@@ -11666,7 +11978,9 @@ CHECKLIST.md и AGENTS.md, затем выполни docs/commands/onboarding.md
 ## Первый запуск
 
 ```bash
-createdb <слаг>_dev && createdb <слаг>_e2e
+psql -d postgres -c "CREATE ROLE <слаг> LOGIN PASSWORD '<слаг>'"
+createdb -O <слаг> <слаг>_dev
+createdb -O <слаг> <слаг>_e2e
 cp .env.example .env
 # APP_AUTH_SECRET: openssl rand -hex 32
 make install
@@ -11674,7 +11988,11 @@ make migrate
 make dev
 ```
 
-Открой http://127.0.0.1:5173, войди под admin / admin.
+Роль создаётся первой и пропуску не подлежит: строка подключения в
+`.env.example` — вход по роли с паролем, а не по имени пользователя системы.
+Без неё `make migrate` падает на `role "<слаг>" does not exist`.
+
+Открой http://localhost:5173, войди под admin / admin.
 
 ## Что нужно знать до первой правки
 
@@ -11742,11 +12060,25 @@ check(".env создан", existsSync(".env"), "cp .env.example .env")
 
 if (existsSync(".env")) {
   const env = readFileSync(".env", "utf8")
-  const secret = env.match(/^APP_AUTH_SECRET="?([^"\n]*)"?/m)?.[1] ?? ""
+  const value = (name) =>
+    env.match(new RegExp(`^${name}="?([^"\\n]*)"?`, "m"))?.[1] ?? ""
   check(
     "APP_AUTH_SECRET задан",
-    secret.length >= 32,
+    value("APP_AUTH_SECRET").length >= 32,
     "openssl rand -hex 32 и вписать в .env"
+  )
+  // .env с одним APP_AUTH_SECRET — это приложение, которое не поднимется
+  // вовсе, а узнаётся об этом на первом `make migrate`.
+  check(
+    "DATABASE_URL задан",
+    value("DATABASE_URL") !== "",
+    "взять строку из .env.example и подставить свой слаг"
+  )
+  check(
+    "DATABASE_URL_E2E задан и отличается",
+    value("DATABASE_URL_E2E") !== "" &&
+      value("DATABASE_URL_E2E") !== value("DATABASE_URL"),
+    "тесты сбрасывают схему целиком — им нужна отдельная база"
   )
 }
 
@@ -11766,10 +12098,51 @@ check(
   "удалить блок из AGENTS.md и CLAUDE.md — последний шаг установки"
 )
 
-const checklistFilled =
-  existsSync("CHECKLIST.md") &&
-  !readFileSync("CHECKLIST.md", "utf8").includes("_не отвечено_")
-check("CHECKLIST.md заполнен", checklistFilled, "ответы владельца на вопросы установки")
+const checklist = existsSync("CHECKLIST.md")
+  ? readFileSync("CHECKLIST.md", "utf8")
+  : null
+check(
+  "CHECKLIST.md заполнен",
+  checklist !== null && !checklist.includes("_не отвечено_"),
+  "ответы владельца на вопросы установки"
+)
+
+// Незакрытые чекбоксы и строка состояния — такие же незавершённые шаги, как
+// пустая ячейка анкеты, и считать надо ВСЕ ТРИ признака. Поиск одного
+// маркера `_не отвечено_` их не видит: скрипт печатал «Установка завершена»
+// поверх `Состояние установки: не начата` и неотмеченного «владелец завёл
+// себе учётную запись и отключил admin» — то есть подтверждал зелёным
+// контур, открытый в интернет с парой admin / admin. Воспроизведено.
+//
+// Считаются ровно два раздела. Чекбоксы «Первой версии» под правило не
+// попадают: там снятая галочка — это ответ «не нужно», а не пропущенный шаг.
+function uncheckedIn(title) {
+  if (checklist === null) return null
+  // Раздел не нашёлся — null и красная строка: молчаливый ноль на
+  // переименованном разделе выглядел бы успехом.
+  const section = checklist.split(/^## /m).find((part) => part.startsWith(title))
+  if (section === undefined) return null
+  return section.split("\n").filter((line) => /^\s*- \[ \]/.test(line)).length
+}
+
+for (const title of ["Проверки окружения", "После установки"]) {
+  const left = uncheckedIn(title)
+  check(
+    `чек-лист «${title}»`,
+    left === 0,
+    left === null ? "раздел не найден в CHECKLIST.md" : `не отмечено: ${left}`
+  )
+}
+
+// Разбор строгий: `завершена` без даты или другое оформление строки дают
+// пустой результат и красную строку. Мягкий разбор объявил бы законченной
+// установку, которая формат просто не соблюла.
+const state = checklist?.match(/^\*\*Состояние установки:\*\*\s*`([^`]*)`/m)?.[1] ?? ""
+check(
+  "состояние установки — завершена",
+  /^завершена \d{4}-\d{2}-\d{2}$/.test(state),
+  checklist === null ? "файла нет" : `сейчас: ${state || "строка не найдена"}`
+)
 
 let failed = 0
 for (const { label, ok, hint } of checks) {
@@ -11782,7 +12155,27 @@ console.log(failed === 0 ? "Установка завершена." : `Оста�
 process.exit(failed === 0 ? 0 : 1)
 ```
 
-- [ ] **Шаг 4: Коммит**
+- [ ] **Шаг 4: Проверить скрипт подделкой**
+
+Скрипт, который печатает «Установка завершена», обязан быть проверен в обе
+стороны — на настоящей установке его зелень принимают за доказательство, и
+на этом он один раз уже подвёл.
+
+Собери во временном каталоге поддельную установку: копия скрипта, полностью
+заполненный `CHECKLIST.md` (ни одного `_не отвечено_`, все чекбоксы двух
+проверяемых разделов отмечены, состояние — `завершена ГГГГ-ММ-ДД`), `.env` с
+тремя значениями, пустые файлы вместо владеющих источников переименования,
+`git init` и origin не на шаблон. Ожидается: все строки `OK`, код 0.
+
+Затем сломай ПО ОДНОМУ и убедись, что краснеет ровно нужная строка и код
+становится 1: снятый чекбокс в каждом из двух разделов; состояние `идёт`,
+`не начата`, `завершена` без даты и удалённая строка состояния;
+переименованный раздел; `.env` без строк подключения; совпавшие
+`DATABASE_URL` и `DATABASE_URL_E2E`; удалённый origin; вернувшееся
+`_не отвечено_`. Проверять надо каждый случай отдельно: проверка, которая
+краснеет только заодно с другими, ничего не сторожит.
+
+- [ ] **Шаг 5: Коммит**
 
 ```bash
 git add README.md ONBOARDING.md scripts/onboarding-check.mjs
