@@ -47,6 +47,7 @@ check-backend:
 # без него tsc верит своему кэшу сборки и молчит.
 check-frontend: check-openapi
 	cd frontend && npx tsc -b --force
+	cd frontend && npm run lint
 	cd frontend && npm run test
 
 # Расхождение контракта ловится здесь: бэкенд поменял схему, фронт не

@@ -1,8 +1,18 @@
 {
+  // Линтер держится ради правил, которых не видит компилятор: главное —
+  // rules-of-hooks. Замерено: условный вызов useState он ловит, tsc и
+  // сборка молчат.
+  //
+  // Советы про Fast Refresh и мемоизацию выключены намеренно. Они не про
+  // правильность, срабатывают в основном на компонентах, которые кладёт
+  // shadcn, и «предупреждение, которое видишь всегда» перестают читать
+  // вместе с настоящими. Линтер в `make check` либо валит прогон, либо
+  // молчит — печатать предупреждения в зелёном прогоне бессмысленно.
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["react", "typescript", "oxc"],
   "rules": {
     "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
+    "react/only-export-components": "off",
+    "react/incompatible-library": "off"
   }
 }

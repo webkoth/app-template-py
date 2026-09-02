@@ -740,6 +740,7 @@ check-backend:
 # без него tsc верит своему кэшу сборки и молчит.
 check-frontend: check-openapi
 	cd frontend && npx tsc -b --force
+	cd frontend && npm run lint
 	cd frontend && npm run test
 
 # Расхождение контракта ловится здесь: бэкенд поменял схему, фронт не
@@ -7896,9 +7897,40 @@ cd frontend && npx shadcn@latest add alert avatar badge button card chart \
 Run: `cd frontend && npx tsc --noEmit && npm run build`
 Expected: сборка проходит, появляется `frontend/dist/`.
 
-- [ ] **Шаг 9: Коммит**
+- [ ] **Шаг 9: Настроить линтер и убрать README от шаблона Vite**
+
+`npm create vite` кладёт `frontend/README.md` — англоязычный текст про
+React Compiler и плагины Vite. Он уедет в каждую установку и будет
+единственным английским документом в русском шаблоне. Удалить.
+
+Скрипт `lint` шаблон тоже приносит, и по умолчанию он не зовётся ниоткуда:
+линтер, который не запускается никогда, — это строка в `package.json`,
+выглядящая работой. Внести в `check-frontend` и оставить в
+`frontend/.oxlintrc.json` только правила про правильность:
+
+```json
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "oxc"],
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/only-export-components": "off",
+    "react/incompatible-library": "off"
+  }
+}
+```
+
+Ради `rules-of-hooks` он и нужен: условный вызов `useState` компилятор и
+сборка пропускают молча, а линтер валит прогон — проверено зондом. Советы
+про Fast Refresh и мемоизацию выключены намеренно: они не про правильность,
+срабатывают в основном на компонентах, которые кладёт shadcn, и
+предупреждение, которое видишь всегда, перестают читать вместе с
+настоящими.
+
+- [ ] **Шаг 10: Коммит**
 
 ```bash
+git rm frontend/README.md
 git add frontend/ Makefile
 git commit -m "chore: каркас SPA на Vite с Tailwind и shadcn/ui"
 ```
