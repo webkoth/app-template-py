@@ -479,7 +479,7 @@ git commit -m "feat: хранилище файлов на диске конту�
 - Modify: `backend/tests/conftest.py` — импорт модели ради метаданных
 - Test: `backend/tests/api/test_jobs.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_jobs.py`:
 
@@ -680,12 +680,12 @@ async def test_error_text_is_cut_not_dropped(session):
     assert job.error.endswith("…")
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/api/test_jobs.py`
 Expected: FAIL — модуля `app.core.jobs` нет.
 
-- [ ] **Шаг 3: Написать `backend/app/core/jobs.py`**
+- [x] **Шаг 3: Написать `backend/app/core/jobs.py`**
 
 ```python
 """Очередь фоновых задач.
@@ -861,7 +861,7 @@ async def fail(session: AsyncSession, job: Job, error: str) -> None:
     await session.commit()
 ```
 
-- [ ] **Шаг 4: Зарегистрировать таблицу в обвязке тестов**
+- [x] **Шаг 4: Зарегистрировать таблицу в обвязке тестов**
 
 В `backend/tests/conftest.py`, к явным импортам моделей:
 
@@ -872,12 +872,12 @@ from app.core.jobs import Job  # noqa: F401  # isort: skip
 Причина там же, где и у прочих: схема тестовой базы создаётся из метаданных,
 а таблица попадает туда, только если её модуль кто-то импортировал.
 
-- [ ] **Шаг 5: Запустить тесты**
+- [x] **Шаг 5: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/api/test_jobs.py -v`
 Expected: PASS, 11 passed
 
-- [ ] **Шаг 6: Доказать охранников мутацией**
+- [x] **Шаг 6: Доказать охранников мутацией**
 
 | Мутация | Обязана упасть |
 |---|---|
@@ -889,7 +889,7 @@ Expected: PASS, 11 passed
 | в `fail` не обрезать текст | `test_error_text_is_cut_not_dropped` |
 | в `enqueue` добавить `await session.commit()` | `test_enqueue_does_not_commit_by_itself` |
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add backend/app/core/jobs.py backend/tests/api/test_jobs.py \
@@ -904,20 +904,20 @@ git commit -m "feat: очередь фоновых задач в PostgreSQL"
 **Files:**
 - Create: `backend/alembic/versions/<хеш>_jobs.py` (генерируется)
 
-- [ ] **Шаг 1: Сгенерировать миграцию**
+- [x] **Шаг 1: Сгенерировать миграцию**
 
 ```bash
 make revision m=jobs
 ```
 
-- [ ] **Шаг 2: Прочитать сгенерированное глазами**
+- [x] **Шаг 2: Прочитать сгенерированное глазами**
 
 Alembic не видит переименований и не знает про `JSONB` из диалекта, если
 импорт не попал в файл. Проверь в миграции три вещи: тип `job_status`
 создаётся, колонки `payload` и `result` — `postgresql.JSONB`, индекс
 `ix_jobs_status_created_at` на месте.
 
-- [ ] **Шаг 3: Применить и откатить**
+- [x] **Шаг 3: Применить и откатить**
 
 ```bash
 make migrate
@@ -927,7 +927,7 @@ cd backend && uv run alembic downgrade -1 && uv run alembic upgrade head
 Expected: обе команды с кодом 0. Необратимая миграция — это откат доставки,
 который нечем сопроводить.
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 git add backend/alembic/versions/
@@ -1160,7 +1160,7 @@ git commit -m "feat: процесс воркера и реестр обрабо�
 - Modify: `backend/pyproject.toml` — pandas, openpyxl
 - Test: `backend/tests/unit/test_tables.py`
 
-- [ ] **Шаг 1: Поставить зависимости**
+- [x] **Шаг 1: Поставить зависимости**
 
 ```bash
 cd backend && uv add pandas openpyxl
@@ -1169,7 +1169,7 @@ cd backend && uv add pandas openpyxl
 `openpyxl` — чтение xlsx для pandas; без него `read_excel` падает
 сообщением про отсутствующий движок, а не про формат.
 
-- [ ] **Шаг 2: Написать падающий тест**
+- [x] **Шаг 2: Написать падающий тест**
 
 Create `backend/tests/unit/test_tables.py`:
 
@@ -1253,12 +1253,12 @@ def test_summary_is_json_safe():
     json.dumps(summarise(frame))
 ```
 
-- [ ] **Шаг 3: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 3: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_tables.py`
 Expected: FAIL — модуля `app.domain.tables` нет.
 
-- [ ] **Шаг 4: Написать `backend/app/domain/tables.py`**
+- [x] **Шаг 4: Написать `backend/app/domain/tables.py`**
 
 ```python
 """Чтение таблицы и сводка по ней. Чистое: байты на входе, данные на выходе.
@@ -1379,12 +1379,12 @@ def summarise(frame: pd.DataFrame) -> dict[str, Any]:
     return {"строк": int(len(frame)), "колонки": columns}
 ```
 
-- [ ] **Шаг 5: Запустить тесты**
+- [x] **Шаг 5: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/unit/test_tables.py -v`
 Expected: PASS, 8 passed
 
-- [ ] **Шаг 6: Проверить, что контракт границ не нарушен**
+- [x] **Шаг 6: Проверить, что контракт границ не нарушен**
 
 Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
 Expected: `Contracts: 3 kept, 0 broken.`
@@ -1393,7 +1393,7 @@ Expected: `Contracts: 3 kept, 0 broken.`
 своё `TableError`, а не `RuleViolation`. Красный контракт здесь означает,
 что в модуль пробрался импорт из `core` — чинить надо модуль, а не контракт.
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add backend/app/domain/tables.py backend/tests/unit/test_tables.py \
@@ -1411,7 +1411,7 @@ git commit -m "feat: чтение таблицы и сводка"
 - Modify: `backend/tests/conftest.py`
 - Create: миграция (генерируется)
 
-- [ ] **Шаг 1: Написать `backend/app/features/datasets/models.py`**
+- [x] **Шаг 1: Написать `backend/app/features/datasets/models.py`**
 
 ```python
 """ОБРАЗЕЦ слоя данных. Показывает путь «файл → очередь → счёт → результат».
@@ -1515,7 +1515,7 @@ class ModelArtifact(Base):
     )
 ```
 
-- [ ] **Шаг 2: Зарегистрировать таблицы в обвязке тестов и в Alembic**
+- [x] **Шаг 2: Зарегистрировать таблицы в обвязке тестов и в Alembic**
 
 В `backend/tests/conftest.py`:
 
@@ -1530,7 +1530,7 @@ from app.features.datasets.models import (  # noqa: F401  # isort: skip
 В `backend/alembic/env.py` — рядом с прочими импортами моделей после
 `# isort: split`.
 
-- [ ] **Шаг 3: Сгенерировать и прочитать миграцию**
+- [x] **Шаг 3: Сгенерировать и прочитать миграцию**
 
 ```bash
 make revision m=datasets
@@ -1539,14 +1539,14 @@ make revision m=datasets
 Проверь глазами: внешние ключи с `ondelete="CASCADE"`, `payload` —
 `LargeBinary`, `feature_columns` — `JSONB`, индекс на `(dataset_id, index)`.
 
-- [ ] **Шаг 4: Применить и откатить**
+- [x] **Шаг 4: Применить и откатить**
 
 ```bash
 make migrate
 cd backend && uv run alembic downgrade -1 && uv run alembic upgrade head
 ```
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 git add backend/app/features/datasets/ backend/tests/conftest.py \
@@ -1567,7 +1567,7 @@ git commit -m "feat: таблицы, строки и артефакты моде
 - Modify: `backend/tests/api/test_route_guards.py`
 - Test: `backend/tests/api/test_datasets.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_datasets.py`:
 
@@ -1750,12 +1750,12 @@ async def test_deleting_unknown_dataset_is_404(client, login_as):
     assert (await client.delete(f"/api/datasets/{missing}")).status_code == 404
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/api/test_datasets.py`
 Expected: FAIL — маршрутов `/api/datasets` ещё нет.
 
-- [ ] **Шаг 3: Написать `backend/app/features/datasets/schemas.py`**
+- [x] **Шаг 3: Написать `backend/app/features/datasets/schemas.py`**
 
 ```python
 import uuid
@@ -1782,7 +1782,7 @@ class DatasetOut(BaseModel):
     created_at: datetime
 ```
 
-- [ ] **Шаг 4: Написать `backend/app/features/datasets/service.py`**
+- [x] **Шаг 4: Написать `backend/app/features/datasets/service.py`**
 
 ```python
 """Правила работы с таблицами. ОБРАЗЕЦ слоя данных."""
@@ -1878,7 +1878,7 @@ async def delete_dataset(
     storage.delete(file_id)
 ```
 
-- [ ] **Шаг 5: Написать `backend/app/features/datasets/jobs.py`**
+- [x] **Шаг 5: Написать `backend/app/features/datasets/jobs.py`**
 
 ```python
 """Фоновая работа фичи «Таблицы».
@@ -1965,7 +1965,7 @@ def _json_safe(value: Any) -> Any:
 HANDLERS = {PARSE: parse}
 ```
 
-- [ ] **Шаг 6: Написать `backend/app/features/datasets/router.py`**
+- [x] **Шаг 6: Написать `backend/app/features/datasets/router.py`**
 
 ```python
 import uuid
@@ -2027,7 +2027,7 @@ async def delete_dataset(
     return {"ok": True}
 ```
 
-- [ ] **Шаг 7: Подключить роутер и учесть маршруты в охране**
+- [x] **Шаг 7: Подключить роутер и учесть маршруты в охране**
 
 В `backend/app/main.py` — `datasets_router` в список роутеров.
 
@@ -2035,7 +2035,7 @@ async def delete_dataset(
 защищённых ролью. **Не в список открытых:** таблицы видит вошедший, а
 загружает и удаляет — editor.
 
-- [ ] **Шаг 8: Поставить зависимость для загрузки**
+- [x] **Шаг 8: Поставить зависимость для загрузки**
 
 ```bash
 cd backend && uv add python-multipart
@@ -2044,12 +2044,12 @@ cd backend && uv add python-multipart
 Без неё FastAPI отвечает на `UploadFile` ошибкой про отсутствующий пакет,
 причём в момент запроса, а не при старте.
 
-- [ ] **Шаг 9: Запустить тесты**
+- [x] **Шаг 9: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/api/test_datasets.py -v`
 Expected: PASS, 13 passed
 
-- [ ] **Шаг 10: Доказать охранников мутацией**
+- [x] **Шаг 10: Доказать охранников мутацией**
 
 | Мутация | Обязана упасть |
 |---|---|
@@ -2062,7 +2062,7 @@ Expected: PASS, 13 passed
 | убрать `storage.detect_kind` из сервиса | `test_wrong_content_is_refused_with_a_human_reason` |
 | убрать `storage.check_size` из роутера | `test_too_large_is_refused_before_the_body_reaches_the_disk` |
 
-- [ ] **Шаг 11: Коммит**
+- [x] **Шаг 11: Коммит**
 
 ```bash
 git add backend/app/features/datasets/ backend/app/main.py \
@@ -2886,6 +2886,12 @@ git commit -m "feat: экран состояния задач"
 
 ### Задача 12: Границы модулей
 
+> **Сделано частично, раньше срока.** Контракты `features-are-independent` и
+> `router-goes-through-service` уже расширены на `datasets`, а
+> `tests/unit/test_boundaries_cover_every_feature.py` сверяет их состав с
+> диском — руками этот список больше не ведётся. Остаются два новых
+> контракта из шагов ниже: про обработчики задач и про воркер.
+
 **Files:**
 - Modify: `backend/.importlinter`
 
@@ -2939,6 +2945,12 @@ git commit -m "chore: границы фоновой работы и воркер
 ---
 
 ### Задача 13: Экраны
+
+> **Хвост, оставленный задачей 8.** Упавший разбор оставляет таблицу с
+> `summary = NULL` — на экране это неотличимо от «считаем». Причина живёт в
+> задаче (`job.error`), и экран таблиц обязан достать её оттуда: сам по себе
+> список таблиц отказ не доносит. Спека требует прямо — «задача упала,
+> причина видна на экране, а не только в серверном логе».
 
 **Files:**
 - Create: `frontend/src/routes/datasets.tsx`, `frontend/src/routes/jobs.tsx`
