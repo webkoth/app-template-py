@@ -13,7 +13,9 @@
 ## Первый запуск
 
 ```bash
-createdb <слаг>_dev && createdb <слаг>_e2e
+psql -d postgres -c "CREATE ROLE <слаг> LOGIN PASSWORD '<слаг>'"
+createdb -O <слаг> <слаг>_dev
+createdb -O <слаг> <слаг>_e2e
 cp .env.example .env
 # APP_AUTH_SECRET: openssl rand -hex 32
 make install
@@ -21,6 +23,13 @@ make migrate
 cd frontend && npx playwright install chromium && cd ..
 make dev
 ```
+
+Роль создаётся первой и пропуску не подлежит: строка подключения в
+`.env.example` — это `postgresql://<слаг>:<слаг>@…`, вход по роли с паролем,
+а не по имени пользователя системы. Без неё `make migrate` падает на
+`role "<слаг>" does not exist`. Владелец у баз задаётся при создании (`-O`)
+и тоже нужен по делу: прогон тестов делает в базе `_e2e`
+`DROP SCHEMA public CASCADE`, и роль без владения этого не может.
 
 Открой http://localhost:5173, войди под admin / admin.
 

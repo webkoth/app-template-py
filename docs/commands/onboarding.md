@@ -124,14 +124,46 @@ CI колесо есть, и ничего этого не происходит.
 прогон тестов сбрасывает схему целиком, и одна база на обе переменные
 означала бы уничтоженную рабочую схему.
 
-- Создай базы:
-  - **macOS/Linux:** `createdb <слаг>_dev && createdb <слаг>_e2e`
-  - **Windows:** `psql -U postgres -c "CREATE ROLE <слаг> LOGIN PASSWORD '<слаг>' CREATEDB;"`,
+- Заведи роль и обе базы. **Роль обязательна, и она первая**: строка
+  подключения в `.env.example` — это `postgresql://<слаг>:<слаг>@…`, то есть
+  вход по роли с паролем, а не по имени пользователя системы. Без роли
+  `make migrate` падает на `role "<слаг>" does not exist`, и ищут причину в
+  миграциях, а не в пропущенной команде. Воспроизведено.
+  - **macOS/Linux:**
+
+    ```bash
+    psql -d postgres -c "CREATE ROLE <слаг> LOGIN PASSWORD '<слаг>'"
+    createdb -O <слаг> <слаг>_dev
+    createdb -O <слаг> <слаг>_e2e
+    ```
+
+  - **Windows:** `psql -U postgres -c "CREATE ROLE <слаг> LOGIN PASSWORD '<слаг>';"`,
     затем `psql -U postgres -c "CREATE DATABASE <слаг>_dev OWNER <слаг>;"` и
     то же для `<слаг>_e2e`
+
+  `-O` (и `OWNER`) задаёт владельца **при создании**. Отдельным
+  `ALTER DATABASE … OWNER` это делать не надо: промахнувшись именем, легко
+  сменить владельца чужой базы, и заметят это не сразу. Владелец нужен по
+  делу, а не для порядка: обвязка тестов делает `DROP SCHEMA public CASCADE`
+  в базе `_e2e`, и роль без владения этого не может.
+
+  `CREATEDB` роли не нужен — базы создаёт суперпользователь командой выше.
+  Право «заводить базы» приложению не требуется никогда, а на контуре роль
+  и вовсе заводит провижинер.
 - `cp .env.example .env`, подставь `DATABASE_URL` и `DATABASE_URL_E2E`,
   сгенерируй `APP_AUTH_SECRET`: `openssl rand -hex 32`.
   `APP_BOOTSTRAP_*` не трогай: пара всегда admin / admin.
+- Проверь, что подставленная строка действительно работает, — до `make
+  migrate`, а не после:
+
+  ```bash
+  psql "$(grep '^DATABASE_URL=' .env | sed 's/DATABASE_URL=//;s/"//g')" \
+    -tAc 'SELECT current_user, current_database()'
+  ```
+
+  Ожидается `<слаг>|<слаг>_dev`. Другой ответ — опечатка в `.env` или
+  пропущенная роль; здесь это одна строка, а через два шага — трейсбек
+  asyncpg на пол-экрана.
 - `make install`
 - `make migrate`
 - `cd frontend && npx playwright install chromium && cd ..`
