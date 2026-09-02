@@ -28,6 +28,7 @@ modules =
     app.features.expenses
     app.features.audit
     app.features.meta
+    app.features.datasets
 
 [importlinter:contract:router-goes-through-service]
 name = router не ходит в модели мимо service
@@ -43,7 +44,9 @@ source_modules =
     app.features.users.router
     app.features.expenses.router
     app.features.audit.router
+    app.features.meta.router
 forbidden_modules =
     app.features.expenses.models
+    app.features.datasets.models
     app.core.users
     app.core.audit
