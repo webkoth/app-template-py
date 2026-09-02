@@ -4,7 +4,7 @@ import time
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.config import settings
@@ -287,27 +287,40 @@ async def test_denial_gives_the_connection_back_before_it_waits(monkeypatch):
     дальше начинался pool_timeout. После возврата соединения перед сном тот
     же замер даёт 1–15 мс.
 
-    Проверяется состояние пула, а не секундомер. Первая редакция требовала
-    «посторонний запрос ждал меньше 100 мс» — и падала на исправном коде:
-    под нагрузкой одно только получение соединения занимает 380–460 мс.
+    Проверяется событие пула, а не секундомер и не опрос. Первая редакция
+    требовала «посторонний запрос ждал меньше 100 мс» — и падала на исправном
+    коде: под нагрузкой одно только получение соединения занимает 380–460 мс.
     Воспроизведено на двадцати четырёх фоновых процессах. Разбор показал, что
     и без нагрузки замер мерил не то: соединение держал не сон, а установка
     первого соединения и сам SELECT — около 300 мс. Случайный красный в CI
     дороже отсутствующего теста: он приучает перезапускать прогон, не читая.
 
-    Формулировка без времени: соединение обязано вернуться в пул ДО того,
-    как отказ завершится. Держи его сон — «занято» держалось бы до самого
-    конца задачи, и разницы между «отпустил» и «закончил» не было бы.
+    Вторая редакция опрашивала `pool.checkedout()` шагом 10 мс и ждала
+    сначала «занято», потом «свободно». Она тоже флапала, и хуже: один
+    красный на десять полных прогонов, изолированно 15 из 15 зелёных. На
+    пути «логина нет» соединение занято ровно на один короткий SELECT, и
+    поллер в это окно попадал не всегда — отказ приходил не от защиты, а от
+    промаха наблюдателя («соединение так и не занялось — проверять нечего»).
+    Воспроизведено на первом же прогоне ревью.
+
+    Здесь наблюдатель не опрашивает, а слушает: пул сам сообщает о возврате
+    соединения событием `checkin`, и промахнуться мимо окна нечем. Сравнение
+    без порогов на время работы: возврат обязан случиться заметно раньше
+    конца отказа, а «заметно» задано растянутым окном выравнивания — 2
+    секунды против миллисекунд, которые проходят между возвратом и концом
+    задачи, если соединение отпускают только в конце.
     """
     from app.features.auth import service
 
-    # Окно растянуто, чтобы промежуток «отпустил, но ещё не закончил» был
-    # заведомо шире шага опроса на любой машине.
-    monkeypatch.setattr(service, "MIN_RESPONSE_SECONDS", 2.0)
+    # Окно растянуто, чтобы разрыв «отпустил» — «закончил» был заведомо
+    # больше любой случайной задержки на любой машине.
+    window = 2.0
+    monkeypatch.setattr(service, "MIN_RESPONSE_SECONDS", window)
 
     engine = create_async_engine(
         settings.async_database_url_e2e, pool_size=1, max_overflow=0
     )
+    returned_at: list[float] = []
     try:
         # Соединение устанавливается заранее. Иначе первым делом отказ платит
         # за установку — сотни миллисекунд, в которые он законно держит
@@ -315,48 +328,28 @@ async def test_denial_gives_the_connection_back_before_it_waits(monkeypatch):
         async with AsyncSession(bind=engine) as warmup:
             await warmup.execute(text("select 1"))
 
-        async def denial() -> None:
-            async with AsyncSession(bind=engine) as db:
-                with pytest.raises(RuleViolation):
-                    await service.authenticate(db, "призрак", "мимо", "10.0.0.3")
+        # Слушатель ставится ПОСЛЕ прогрева: возврат прогревочного соединения
+        # — тоже checkin, и он оказался бы первым в списке.
+        event.listen(
+            engine.sync_engine,
+            "checkin",
+            lambda *_: returned_at.append(time.monotonic()),
+        )
 
-        attempt = asyncio.create_task(denial())
-
-        async def wait_until(busy: bool) -> bool:
-            """Ждёт нужного состояния пула. Возвращает: задача ещё идёт.
-
-            Порядок двух чтений существенный. Сначала состояние пула, потом
-            состояние задачи: если соединение свободно в момент t1, а задача
-            ещё жива в момент t2 > t1, то освобождение точно случилось раньше
-            завершения. Обратный порядок этого не доказывает, и проверка
-            начинает врать под нагрузкой — прогон, где цикл событий встал на
-            все две секунды окна, объявлял бы удержание там, где его нет.
-            Один такой ложный отказ уже наблюдался.
-            """
-            for _ in range(1000):
-                reached = engine.pool.checkedout() == (1 if busy else 0)
-                still_running = not attempt.done()
-                if reached:
-                    return still_running
-                if not still_running:
-                    break
-                await asyncio.sleep(0.01)
-            await attempt
-            raise AssertionError(
-                "соединение так и не "
-                + ("занялось" if busy else "вернулось в пул")
-                + " — проверять нечего"
-            )
-
-        await wait_until(busy=True)
-        released_before_the_end = await wait_until(busy=False)
-        await attempt
+        async with AsyncSession(bind=engine) as db:
+            with pytest.raises(RuleViolation):
+                await service.authenticate(db, "призрак", "мимо", "10.0.0.3")
+        finished_at = time.monotonic()
     finally:
         await engine.dispose()
 
-    assert released_before_the_end, (
-        "соединение вернулось в пул только вместе с завершением отказа — "
-        "значит выравнивание времени держало его всё ожидание"
+    assert returned_at, (
+        "соединение в пул не возвращалось вовсе — проверять нечего. Либо "
+        "отказ его не занимал, либо возврат перестал быть виден пулу"
+    )
+    assert finished_at - returned_at[0] >= window / 2, (
+        "соединение вернулось в пул вместе с завершением отказа, а не до "
+        "него — значит выравнивание времени держало его всё ожидание"
     )
 
 
