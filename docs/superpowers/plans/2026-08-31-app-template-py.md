@@ -11738,6 +11738,27 @@ git commit -m "ci: ежедневная проверка свежести рез
 - Create: `AGENTS.md`
 - Create: `CLAUDE.md`
 - Create: `.cursor/rules/project.mdc`
+- Create: `.claude/skills/{brainstorming,writing-plans,executing-plans}/`
+
+- [ ] **Шаг 0: Перенести скиллы порядка работы**
+
+```bash
+SRC=/Users/minas/projects/app-template/.claude/skills
+mkdir -p .claude/skills
+cp -R $SRC/brainstorming $SRC/writing-plans $SRC/executing-plans .claude/skills/
+```
+
+Правила ниже обещают, что сессия начинается со скилла `brainstorming`.
+Обещание без предмета — это не обещание: скиллы обязаны лежать в самом
+репозитории и приезжать в каждую установку вместе с ним. Их ровно три, по
+одному на шаг порядка «спека → план → реализация». Остальные скиллы эталона
+(`test-driven-development`, `systematic-debugging`, `shadcn`) не переносятся
+намеренно: те же правила написаны в `AGENTS.md` своими словами, а две записи
+одного правила однажды разъезжаются.
+
+В `executing-plans/SKILL.md` заменить строку проверок: там команды npm из
+эталона, а здесь единственная точка входа — `make check` (и
+`cd frontend && npx playwright test` после правок сценариев).
 
 - [ ] **Шаг 1: Написать `AGENTS.md`**
 
