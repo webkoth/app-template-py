@@ -21,9 +21,18 @@
 from app.core.audit import AuditLog
 from app.core.jobs import Job
 from app.core.users import User
+from app.features.datasets.models import Dataset, DatasetRow, ModelArtifact
 from app.features.expenses.models import Expense
 
 # Имена перечислены явно, а не просто импортированы ради побочного эффекта:
 # так линтер не сочтёт импорты лишними, а читатель видит состав схемы одним
 # взглядом, не разбирая цепочку импортов.
-__all__ = ["AuditLog", "Expense", "Job", "User"]
+__all__ = [
+    "AuditLog",
+    "Dataset",
+    "DatasetRow",
+    "Expense",
+    "Job",
+    "ModelArtifact",
+    "User",
+]
