@@ -5,24 +5,28 @@
 HANDLERS так же, как main.py собирает роутеры.
 """
 
+import io
 import math
 import uuid
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import delete
+import joblib
+import pandas as pd
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import jobs, storage
 from app.core.jobs import Job
 from app.domain.tables import read_table, summarise
-from app.features.datasets.models import Dataset, DatasetRow
+from app.features.datasets.models import Dataset, DatasetRow, ModelArtifact
 
 # Вид задачи объявлен ЗДЕСЬ, рядом с обработчиком, и импортируется всеми
 # остальными. Два места, где написана строка «datasets.parse», разъезжаются
 # молча: постановка кладёт один вид, HANDLERS ждёт другой, и задача просто
 # не берётся — без ошибки, без записи в логе, навсегда «в очереди».
 PARSE = "datasets.parse"
+TRAIN = "datasets.train"
 
 # Отметка живости ставится не на каждой строке, а раз в столько: запись в
 # базу на каждой строке стоила бы дороже самого разбора.
@@ -31,6 +35,30 @@ _HEARTBEAT_EVERY = 500
 # Сколько процентов отдано разбору строк. Остальное — сводка и завершение:
 # показать 100 % до того, как результат сохранён, значит соврать экрану.
 _ROWS_SHARE = 90
+
+# Минимум строк для обучения. Меньше — модель запоминает выборку целиком, а
+# метрика показывает единицу и врёт. Отказ честнее бессмысленной модели.
+MIN_ROWS_TO_TRAIN = 20
+
+# Вид колонки в сводке, по которому можно обучать. Слово задаёт `summarise`
+# из `app/domain/tables.py`, и здесь оно написано второй раз — контракт
+# между разбором и обучением держится на нём. Разъедутся — обучение начнёт
+# отказывать по всем колонкам сразу, и это видно первым же прогоном.
+NUMERIC_KIND = "число"
+
+# Четверть строк не участвует в обучении и идёт на проверку. Метрика,
+# посчитанная на тех же строках, на которых учили, хвалит модель за
+# запоминание, а не за предсказание, — и тем громче, чем модель хуже.
+_TEST_SHARE = 0.25
+
+# Зерно фиксировано: два обучения на одной таблице обязаны давать одну и ту
+# же метрику, иначе сравнивать модели между собой нечем.
+_RANDOM_STATE = 0
+
+# Проценты: разбиение сделано, обучение сделано. Сотню ставит очередь, когда
+# артефакт уже сохранён.
+_SPLIT_DONE = 30
+_FIT_DONE = 80
 
 
 async def parse(session: AsyncSession, job: Job) -> dict[str, Any]:
@@ -124,4 +152,95 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-HANDLERS = {PARSE: parse}
+async def train(session: AsyncSession, job: Job) -> dict[str, Any]:
+    """Обучает модель на разобранной таблице и сохраняет артефакт.
+
+    Одна модель и без подбора параметров — намеренно. Образец показывает,
+    где живёт обучение и как хранится артефакт, а не как настраивать модель:
+    подбор параметров — решение под конкретную задачу, а её пока нет.
+    """
+    # sklearn импортируется здесь, а не наверху модуля. Импорт его стоит
+    # секунду с лишним, а этот модуль тянет за собой веб-процесс: оттуда
+    # берутся имена видов задач. Обучение делает только воркер, и платить за
+    # импорт при каждом старте приложения незачем.
+    from sklearn.linear_model import LinearRegression
+    from sklearn.metrics import r2_score
+    from sklearn.model_selection import train_test_split
+
+    dataset_id = uuid.UUID(job.payload["dataset_id"])
+    target = str(job.payload["target_column"])
+
+    dataset = await session.get(Dataset, dataset_id)
+    if dataset is None or dataset.summary is None:
+        # Таблицу удалили, пока задача ждала. Это не отказ: работы больше
+        # нет, и сообщать человеку не о чем — ровно как в разборе.
+        return {"строк": 0, "примечание": "таблица удалена"}
+
+    # Состав и ПОРЯДОК колонок берутся из сводки, а не из разобранных строк.
+    # Строки лежат в JSONB, а он нормализует порядок ключей — сначала по
+    # длине, потом побайтно, — и «площадь, комнат, цена» читается из базы
+    # как «цена, комнат, площадь». Модели порядок безразличен: он сохранён в
+    # артефакте, и предсказание собирает строку по нему же. Но список
+    # признаков читает человек, и перепутанный порядок он читает как
+    # поломку. Сводку собрал разбор по самой таблице — там порядок настоящий.
+    features = [
+        str(column["имя"])
+        for column in dataset.summary["колонки"]
+        if column["имя"] != target and column["вид"] == NUMERIC_KIND
+    ]
+    if not features:
+        raise ValueError("Нет числовых колонок, по которым можно обучать")
+
+    rows = (
+        (
+            await session.execute(
+                select(DatasetRow)
+                .where(DatasetRow.dataset_id == dataset_id)
+                .order_by(DatasetRow.index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(rows) < MIN_ROWS_TO_TRAIN:
+        raise ValueError(
+            f"Для обучения нужно хотя бы {MIN_ROWS_TO_TRAIN} строк, есть {len(rows)}"
+        )
+
+    frame = pd.DataFrame([row.data for row in rows])
+    await jobs.heartbeat(session, job, progress=_SPLIT_DONE)
+
+    # to_numpy, а не сам DataFrame: модель, обученная на именованных
+    # колонках, предупреждает на КАЖДОМ предсказании, что имён ей не
+    # передали, — а предсказание собирается из словаря формы по порядку из
+    # артефакта. Предупреждение в логе на каждом запросе — шум, за которым
+    # перестают замечать настоящие.
+    x_train, x_test, y_train, y_test = train_test_split(
+        frame[features].to_numpy(),
+        frame[target].to_numpy(),
+        test_size=_TEST_SHARE,
+        random_state=_RANDOM_STATE,
+    )
+    model = LinearRegression().fit(x_train, y_train)
+    metric = float(r2_score(y_test, model.predict(x_test)))
+    await jobs.heartbeat(session, job, progress=_FIT_DONE)
+
+    buffer = io.BytesIO()
+    joblib.dump(model, buffer)
+    session.add(
+        ModelArtifact(
+            dataset_id=dataset_id,
+            target_column=target,
+            feature_columns=features,
+            algorithm="LinearRegression",
+            metric_name="r2",
+            metric_value=metric,
+            payload=buffer.getvalue(),
+            actor=job.actor,
+        )
+    )
+    await session.commit()
+    return {"метрика": metric, "колонок": len(features)}
+
+
+HANDLERS = {PARSE: parse, TRAIN: train}

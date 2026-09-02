@@ -221,6 +221,12 @@ def test_the_rest_of_the_api_is_guarded_by_role():
         "GET /api/datasets",
         "POST /api/datasets",
         "DELETE /api/datasets/{dataset_id}",
+        # Обучение и предсказание. Обучает editor, смотрит и предсказывает
+        # любой вошедший: предсказание ничего не меняет, а модель, по
+        # которой оно идёт, уже обучена под присмотром роли.
+        "POST /api/datasets/{dataset_id}/models",
+        "GET /api/datasets/{dataset_id}/models",
+        "POST /api/models/{model_id}/predict",
         "GET /api/audit",
     ):
         assert name in guarded, f"{name} больше не проверяет роль"

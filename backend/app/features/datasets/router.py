@@ -7,7 +7,12 @@ from app.core import storage
 from app.core.deps import CurrentUser, SessionDep, require_role
 from app.domain.roles import Role
 from app.features.datasets import service
-from app.features.datasets.schemas import DatasetOut
+from app.features.datasets.schemas import (
+    DatasetOut,
+    ModelOut,
+    PredictRequest,
+    TrainRequest,
+)
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -62,3 +67,47 @@ async def delete_dataset(
 ) -> dict[str, bool]:
     await service.delete_dataset(session, dataset_id, actor.login)
     return {"ok": True}
+
+
+@router.post("/{dataset_id}/models", status_code=status.HTTP_202_ACCEPTED)
+async def start_training(
+    dataset_id: uuid.UUID,
+    payload: TrainRequest,
+    session: SessionDep,
+    actor: CurrentUser = EditorDep,
+) -> dict[str, str]:
+    # 202, а не 201: модели ещё нет, есть поставленная задача. Ответить 201
+    # значило бы соврать про то, что уже создано.
+    job = await service.start_training(
+        session, dataset_id, payload.target_column, actor.login
+    )
+    return {"job_id": str(job.id)}
+
+
+@router.get("/{dataset_id}/models", response_model=list[ModelOut])
+async def list_models(
+    dataset_id: uuid.UUID, session: SessionDep, _: CurrentUser = ViewerDep
+) -> list[ModelOut]:
+    return [
+        ModelOut.model_validate(m)
+        for m in await service.list_models(session, dataset_id)
+    ]
+
+
+# Отдельный роутер, а не путь внутри таблицы. Модель принадлежит таблице, но
+# предсказание зовут по идентификатору модели, и вкладывать его в путь
+# таблицы значило бы требовать от клиента знать оба — а второй он берёт
+# ровно из той же записи, что и первый.
+models_router = APIRouter(prefix="/models", tags=["datasets"])
+
+
+@models_router.post("/{model_id}/predict")
+async def predict(
+    model_id: uuid.UUID,
+    payload: PredictRequest,
+    session: SessionDep,
+    _: CurrentUser = ViewerDep,
+) -> dict[str, float]:
+    # Предсказание смотрит любой вошедший: оно ничего не меняет, а обучил
+    # модель уже editor.
+    return {"значение": await service.predict(session, model_id, payload.row)}
