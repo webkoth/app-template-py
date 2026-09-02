@@ -14,15 +14,22 @@
    таблицы или колонки с данными) предупреди владельца ДО пуша: откат кода
    её не отменяет, спасает только резервная копия.
 3. `git push -u origin feature/<ветка>` и дождись CI:
-   `gh run watch $(gh run list --branch feature/<ветка> -L1 --json databaseId -q '.[0].databaseId') --exit-status`
+   `sh scripts/wait-for-run.sh ci.yml`
+   Скрипт ждёт прогон ИМЕННО за твоим коммитом. Прежний
+   `gh run watch $(gh run list --branch … -L1 …)` смотрел на любой последний
+   прогон ветки: между push и созданием нового есть окно в несколько секунд,
+   и в это окно `-L1` отдаёт прошлый, уже зелёный. Воспроизведено —
+   `--exit-status` возвращал 0 мгновенно, доставка объявлялась успешной.
 4. `git fetch origin && git switch main && git pull origin main`
 5. `git merge --no-ff feature/<ветка>` — конфликты решай по смыслу; если
    конфликт затрагивает чужую незнакомую логику, остановись и спроси.
 6. `git push origin main`
 7. Дождись доставки:
-   `gh run watch $(gh run list --branch main -L1 --json databaseId -q '.[0].databaseId') --exit-status`
+   `sh scripts/wait-for-run.sh deploy.yml`
    Красный прогон — прочитай `gh run view --log-failed`, почини причину на
-   feature-ветке и повтори с шага 2.
+   feature-ветке и повтори с шага 2. Скрипт отказался ждать («прогон так и не
+   появился») — это НЕ успех: значит, конвейер не запустился вовсе, и на
+   контуре осталось прежнее.
 8. Удали слитую ветку (`git branch -d feature/<ветка>`) и назови
    пользователю адрес контура.
 
