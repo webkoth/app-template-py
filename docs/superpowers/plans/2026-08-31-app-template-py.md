@@ -8455,13 +8455,46 @@ cp $SRC/scripts/apply-theme.ts frontend/scripts/
 
 - [ ] **Шаг 2: Поправить путь к CSS в `frontend/scripts/apply-theme.ts`**
 
-Заменить строку с `GLOBALS`:
+Здесь файл темы называется `src/index.css`, а в соседнем шаблоне —
+`app/globals.css`. Правится только этот скрипт: `src/lib/design/` остаётся
+побайтовой копией соседа, потому что два шаблона сверяются обычным `diff`, и
+любая правка в общем каталоге превращает сверку в шум. Цена решения —
+`replaceThemeBlock` бросает ошибку с чужим именем файла, и подменить его
+можно единственным местом, которое знает настоящий путь: этим скриптом.
 
 ```typescript
 // Резолвится от расположения самого скрипта, а не от текущего каталога:
 // запуск не из корня иначе давал бы сырой ENOENT вместо внятного отказа.
-const GLOBALS = fileURLToPath(new URL("../src/index.css", import.meta.url))
+const THEME_CSS = fileURLToPath(new URL("../src/index.css", import.meta.url))
+
+// Так файл с темой называется в соседнем шаблоне: имя приезжает сюда в
+// тексте ошибки из общего кода и подменяется на настоящий путь.
+const FOREIGN_NAME = "app/globals.css"
 ```
+
+Запись файла — через try/catch, иначе сообщение про ненайденные маркеры
+назовёт файл, которого в этом репозитории нет:
+
+```typescript
+let updated: string
+try {
+  updated = replaceThemeBlock(css, buildThemeCss(theme))
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error(
+    message.includes(FOREIGN_NAME)
+      ? message.replaceAll(FOREIGN_NAME, THEME_CSS)
+      : `${message}\n\nФайл: ${THEME_CSS}`
+  )
+  process.exit(1)
+}
+```
+
+Проверить руками, обе ветки: сломать маркер `theme:start` в
+`src/index.css` и убедиться, что отказ называет `frontend/src/index.css`;
+затем испортить сам `FOREIGN_NAME` и убедиться, что путь всё равно назван —
+отдельной строкой. Вторая ветка сторожит подмену от текста, изменившегося у
+соседа.
 
 и импорты — на `../src/lib/design/...`:
 
