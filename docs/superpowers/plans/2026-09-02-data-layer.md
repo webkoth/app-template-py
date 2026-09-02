@@ -431,7 +431,7 @@ Expected: PASS, 8 passed
 
 | Мутация | Обязана упасть |
 |---|---|
-| `path_for` возвращает `_dir() / original_name` | `test_stored_name_is_an_identifier_not_the_original` |
+| в `save` писать в `_dir() / "upload.bin"` вместо `path_for(file_id)` | `test_stored_name_is_an_identifier_not_the_original` |
 | убрать проверку размера в `save` | `test_too_large_is_refused_even_when_size_is_not_declared` |
 | `detect_kind` всегда возвращает `"csv"` | `test_unknown_content_is_refused` |
 | `delete` без `missing_ok=True` | `test_delete_is_silent_when_the_file_is_already_gone` |
@@ -489,10 +489,17 @@ async def test_enqueued_job_waits_in_the_queue(session):
 
 
 async def test_two_workers_never_take_the_same_job(new_session):
-    # Смысл SKIP LOCKED. Без него оба воркера берут одну задачу: один
-    # считает впустую, а результат второго затирается первым. Гарантирует
-    # это база, а не наша аккуратность, — и проверяется поэтому настоящей
-    # одновременностью, на отдельных соединениях.
+    # Одну задачу берёт ровно один воркер. Гарантирует это БЛОКИРОВКА
+    # СТРОКИ — `with_for_update`, — а не наша аккуратность, и проверяется
+    # поэтому настоящей одновременностью, на отдельных соединениях.
+    #
+    # Проверено на живой базе, что бывает без неё: две транзакции читают
+    # одну и ту же строку, обе объявляют её своей, а следующая задача так и
+    # остаётся ждать. То есть один воркер считает впустую, второй затирает
+    # его результат, и очередь при этом кажется движущейся.
+    #
+    # `skip_locked` к этому отношения не имеет — ему посвящён следующий
+    # тест, и охраняет он другое.
     async with new_session() as setup:
         jobs.enqueue(setup, kind="проба", payload={}, actor="boss")
         await setup.commit()
@@ -510,6 +517,47 @@ async def test_two_workers_never_take_the_same_job(new_session):
         for row in (await cleanup.execute(select(Job))).scalars().all():
             await cleanup.delete(row)
         await cleanup.commit()
+
+
+async def test_a_locked_row_does_not_hide_the_next_job(new_session):
+    # А это смысл SKIP LOCKED, и он ДРУГОЙ, чем кажется. Взятие одной
+    # задачи двумя воркерами запрещает блокировка и без него: второй просто
+    # ждёт, пока первый отпустит строку, и уходит ни с чем. Разница в том,
+    # чего это стоит, и она измерена на живой базе: 0,03 с против 1,15 с,
+    # проведённых в ожидании чужого коммита. Всё это время воркер не берёт
+    # СЛЕДУЮЩУЮ задачу, хотя она свободна.
+    #
+    # Поэтому проверка такая: первая строка заперта незакрытой транзакцией,
+    # в очереди есть вторая задача, и claim обязан вернуть именно её. Без
+    # skip_locked=True он повиснет на запертой строке — не «отработает
+    # медленнее», а не вернётся вовсе, пока держат замок. Отсюда wait_for:
+    # без него красный тест выглядел бы как зависший прогон.
+    async with new_session() as setup:
+        jobs.enqueue(setup, kind="первая", payload={}, actor="boss")
+        await setup.commit()
+        jobs.enqueue(setup, kind="вторая", payload={}, actor="boss")
+        await setup.commit()
+
+    try:
+        async with new_session() as holder:
+            held = (
+                await holder.execute(
+                    select(Job).order_by(Job.created_at).limit(1).with_for_update()
+                )
+            ).scalar_one()
+            assert held.kind == "первая"
+            # Транзакция holder НЕ закрыта: строка заперта до конца блока.
+
+            async with new_session() as second:
+                job = await asyncio.wait_for(jobs.claim(second), timeout=5)
+
+            assert job is not None, "запертая строка спрятала свободную задачу"
+            assert job.kind == "вторая"
+    finally:
+        async with new_session() as cleanup:
+            for row in (await cleanup.execute(select(Job))).scalars().all():
+                await cleanup.delete(row)
+            await cleanup.commit()
 
 
 async def test_claiming_marks_the_job_running(session):
@@ -620,8 +668,13 @@ Expected: FAIL — модуля `app.core.jobs` нет.
 она ставится, попадают в одну транзакцию: состояния «задача есть, данных
 нет» не существует.
 
-Взятие — SELECT … FOR UPDATE SKIP LOCKED. Два воркера никогда не возьмут
-одну задачу, и это гарантирует база, а не аккуратность кода.
+Взятие — SELECT … FOR UPDATE SKIP LOCKED, и две его половины отвечают за
+разное. FOR UPDATE запирает строку: одну задачу берёт ровно один воркер, и
+это гарантирует база, а не аккуратность кода. SKIP LOCKED отвечает не за
+это, а за то, что воркер, наткнувшийся на запертую строку, берёт следующую
+задачу вместо того, чтобы ждать на чужом коммите. Проверено обеими
+проверками отдельно: без FOR UPDATE задачу берут двое, без SKIP LOCKED — не
+берёт никто, пока держат замок.
 """
 
 import uuid
@@ -795,13 +848,14 @@ from app.core.jobs import Job  # noqa: F401  # isort: skip
 - [ ] **Шаг 5: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/api/test_jobs.py -v`
-Expected: PASS, 10 passed
+Expected: PASS, 11 passed
 
 - [ ] **Шаг 6: Доказать охранников мутацией**
 
 | Мутация | Обязана упасть |
 |---|---|
-| убрать `skip_locked=True` | `test_two_workers_never_take_the_same_job` |
+| убрать `.with_for_update(...)` целиком | `test_two_workers_never_take_the_same_job` |
+| убрать `skip_locked=True`, оставив `with_for_update()` | `test_a_locked_row_does_not_hide_the_next_job` |
 | убрать ветку `running` + просроченный heartbeat из `claim` | `test_stale_running_job_returns_to_the_queue` |
 | в `claim` не ставить `heartbeat_at` | `test_a_living_job_is_not_taken_away` |
 | в `fail` всегда ставить `failed` | `test_failure_returns_the_job_until_attempts_run_out` |
