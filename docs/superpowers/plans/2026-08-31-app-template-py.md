@@ -10,6 +10,12 @@
 
 **Спека:** `docs/superpowers/specs/2026-08-31-app-template-py-design.md`
 
+
+**Состояние:** план выполнен полностью, все 42 задачи. Блоки кода в нём
+сверены с репозиторием побайтово и правились по ходу: исполнение находило
+в плане ошибки, и починка шла в обе стороны — в код и сюда. Поэтому текст
+ниже описывает то, что действительно лежит в репозитории, а не то, что
+задумывалось до начала работы.
 ---
 
 ## Как пользоваться этим планом
@@ -80,7 +86,7 @@ shadcn, и переформатировав их, мы получим шумны
 - Create: `backend/tests/__init__.py`
 - Create: `.gitignore`
 
-- [ ] **Шаг 1: Создать каталоги и файлы-пакеты**
+- [x] **Шаг 1: Создать каталоги и файлы-пакеты**
 
 ```bash
 mkdir -p backend/app/{core,domain,features} backend/tests/{unit,api} backend/alembic/versions
@@ -90,7 +96,7 @@ touch backend/app/__init__.py backend/app/core/__init__.py \
 echo "3.14" > backend/.python-version
 ```
 
-- [ ] **Шаг 2: Написать `backend/pyproject.toml`**
+- [x] **Шаг 2: Написать `backend/pyproject.toml`**
 
 ```toml
 [project]
@@ -193,7 +199,7 @@ build-backend = "hatchling.build"
 packages = ["app"]
 ```
 
-- [ ] **Шаг 3: Написать `.gitignore` в корне репозитория**
+- [x] **Шаг 3: Написать `.gitignore` в корне репозитория**
 
 ```gitignore
 .DS_Store
@@ -220,12 +226,12 @@ build-info.json
 уехал бы в коммит и стал бы отвечать на `/api/meta/build-info` версией
 чужой машины.
 
-- [ ] **Шаг 4: Проверить, что окружение ставится**
+- [x] **Шаг 4: Проверить, что окружение ставится**
 
 Run: `cd backend && uv sync`
 Expected: создаётся `backend/.venv` и `backend/uv.lock`, ошибок нет.
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 git add .gitignore backend/
@@ -245,7 +251,7 @@ git commit -m "chore: каркас бэкенда, зависимости и п�
 - Create: `backend/tests/unit/test_config.py`
 - Create: `.env.example`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_config.py`:
 
@@ -382,12 +388,12 @@ def test_error_text_does_not_leak_secrets():
     assert "Secure" in text
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_config.py`
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.core.config'`
 
-- [ ] **Шаг 3: Написать `backend/app/core/config.py`**
+- [x] **Шаг 3: Написать `backend/app/core/config.py`**
 
 ```python
 """Конфигурация приложения.
@@ -567,12 +573,12 @@ settings = load_settings()
    когда упавшая проверка про `COOKIE_SECURE`. Поэтому наружу отдаётся текст,
    собранный только из имени поля и текста проверки.
 
-- [ ] **Шаг 4: Запустить тест**
+- [x] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_config.py`
 Expected: PASS, 13 passed
 
-- [ ] **Шаг 5: Написать `.env.example` в корне репозитория**
+- [x] **Шаг 5: Написать `.env.example` в корне репозитория**
 
 Файл лежит именно в корне, рядом с будущим `.env`: туда же кладёт `.env`
 провижинер на контуре, и оттуда же его читает `ENV_FILE`.
@@ -595,7 +601,7 @@ APP_BOOTSTRAP_PASSWORD="admin"
 APP_BOOTSTRAP_NAME="Администратор"
 ```
 
-- [ ] **Шаг 6: Завести локальный `.env`**
+- [x] **Шаг 6: Завести локальный `.env`**
 
 Без него модуль нельзя даже импортировать: `settings` разбирается при
 импорте. Файл в `.gitignore`, в репозиторий не попадает.
@@ -606,7 +612,7 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 # вписать полученное значение в APP_AUTH_SECRET в .env
 ```
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add backend/app/core/config.py backend/tests/unit/test_config.py .env.example
@@ -623,7 +629,7 @@ git commit -m "feat: конфигурация приложения на pydantic
 **Files:**
 - Create: `backend/.importlinter`
 
-- [ ] **Шаг 1: Написать `backend/.importlinter`**
+- [x] **Шаг 1: Написать `backend/.importlinter`**
 
 ```ini
 [importlinter]
@@ -672,7 +678,7 @@ does not exist»). Записав сразу все три, мы получил�
 | `features-are-independent` | задача 10 | там создаются пакеты всех пяти фич |
 | `router-goes-through-service` | задача 22 | там появляются последние `router.py` |
 
-- [ ] **Шаг 2: Проверить, что контракт работает**
+- [x] **Шаг 2: Проверить, что контракт работает**
 
 Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
 Expected: `Contracts: 1 kept, 0 broken.`
@@ -680,7 +686,7 @@ Expected: `Contracts: 1 kept, 0 broken.`
 Проверяй именно эту строку, а не отсутствие ошибки: пустой вывод с нулевым
 кодом означает неверный способ запуска, а не пройденную проверку.
 
-- [ ] **Шаг 3: Коммит**
+- [x] **Шаг 3: Коммит**
 
 ```bash
 git add backend/.importlinter
@@ -697,7 +703,7 @@ Toolchain два, а точка входа должна остаться одн�
 **Files:**
 - Create: `Makefile`
 
-- [ ] **Шаг 1: Написать `Makefile` в корне репозитория**
+- [x] **Шаг 1: Написать `Makefile` в корне репозитория**
 
 ```makefile
 # Единая точка входа. `make check` прогоняется перед любым коммитом.
@@ -824,7 +830,7 @@ Rails и стал бы здесь ловушкой.
 **Защита `m=`.** Без имени Alembic создаёт файл со случайным именем, и через
 месяц история миграций нечитаема. Пустая строка (`m=""`) тоже отвергается.
 
-- [ ] **Шаг 2: Проверить, что проверки проходят**
+- [x] **Шаг 2: Проверить, что проверки проходят**
 
 Run: `make check`
 Expected: ruff, mypy, lint-imports и pytest зелёные (13 тестов), затем
@@ -835,7 +841,7 @@ Expected: ruff, mypy, lint-imports и pytest зелёные (13 тестов), �
 клиента и первые тесты, и по нему ворота открывались бы на две задачи раньше
 времени. Подробности и новая цель — в шаге 1 задачи 23.
 
-- [ ] **Шаг 3: Проверить, что защиты срабатывают**
+- [x] **Шаг 3: Проверить, что защиты срабатывают**
 
 ```bash
 make revision           # ожидается отказ: «нужно имя: make revision m=<слаг>»
@@ -843,7 +849,7 @@ make revision m=""      # тот же отказ
 make -n dev             # ожидается набор команд без запуска
 ```
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 git add Makefile
@@ -862,7 +868,7 @@ git commit -m "chore: Makefile как единая точка входа в пр
 - Create: `backend/app/domain/money.py`
 - Create: `backend/tests/unit/test_money.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_money.py`:
 
@@ -955,12 +961,12 @@ def test_limit_is_int4_max():
     assert MAX_AMOUNT_MINOR == 2_147_483_647
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_money.py`
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.domain.money'`
 
-- [ ] **Шаг 3: Написать `backend/app/domain/money.py`**
+- [x] **Шаг 3: Написать `backend/app/domain/money.py`**
 
 ```python
 """Деньги.
@@ -1059,7 +1065,7 @@ def format_money(minor: int) -> str:
 `MAX_AMOUNT_MINOR` делает сервис фичи (задача 21) — там же, где запрет
 отрицательных сумм, и по той же причине.
 
-- [ ] **Шаг 4: Поправить тест под неразрывный пробел**
+- [x] **Шаг 4: Поправить тест под неразрывный пробел**
 
 В `backend/tests/unit/test_money.py` заменить класс `TestFormat` на:
 
@@ -1087,12 +1093,12 @@ class TestFormat:
         assert self.fmt(MAX_AMOUNT_MINOR) == "21 474 836,47 ₽"
 ```
 
-- [ ] **Шаг 5: Запустить тест**
+- [x] **Шаг 5: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_money.py -v`
 Expected: PASS, 19 passed
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/domain/money.py backend/tests/unit/test_money.py
@@ -1107,7 +1113,7 @@ git commit -m "feat: разбор и форматирование денег в 
 - Create: `backend/app/domain/dates.py`
 - Create: `backend/tests/unit/test_dates.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_dates.py`:
 
@@ -1187,12 +1193,12 @@ class TestFormat:
             format_date_time(datetime(2026, 8, 31, 12, 0))
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_dates.py`
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.domain.dates'`
 
-- [ ] **Шаг 3: Написать `backend/app/domain/dates.py`**
+- [x] **Шаг 3: Написать `backend/app/domain/dates.py`**
 
 ```python
 """Даты.
@@ -1262,12 +1268,12 @@ def format_date_time(value: datetime) -> str:
     return _in_moscow(value).strftime("%d.%m.%Y %H:%M")
 ```
 
-- [ ] **Шаг 4: Запустить тест**
+- [x] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_dates.py -v`
 Expected: PASS, 12 passed
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 git add backend/app/domain/dates.py backend/tests/unit/test_dates.py
@@ -1282,7 +1288,7 @@ git commit -m "feat: разбор и показ дат в московской �
 - Create: `backend/app/domain/roles.py`
 - Create: `backend/tests/unit/test_roles.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_roles.py`:
 
@@ -1319,12 +1325,12 @@ def test_unknown_role_denies_rather_than_passes():
         Role("superuser")
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_roles.py`
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.domain.roles'`
 
-- [ ] **Шаг 3: Написать `backend/app/domain/roles.py`**
+- [x] **Шаг 3: Написать `backend/app/domain/roles.py`**
 
 ```python
 """Роли по рангу: viewer < editor < admin."""
@@ -1352,12 +1358,12 @@ def has_rank(actual: Role, required: Role) -> bool:
 `ValueError` при разборе, а значит до сравнения дело не доходит. Это сильнее
 проверки в рантайме — тип закрывает случай на входе.
 
-- [ ] **Шаг 4: Запустить тест**
+- [x] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_roles.py -v`
 Expected: PASS, 6 passed
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 git add backend/app/domain/roles.py backend/tests/unit/test_roles.py
@@ -1375,7 +1381,7 @@ git commit -m "feat: роли и сравнение по рангу"
 - Create: `backend/app/domain/expenses.py`
 - Create: `backend/tests/unit/test_expenses.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_expenses.py`:
 
@@ -1444,12 +1450,12 @@ class TestTotals:
             totals_by_category([("Софт", -5000), ("Аренда", 10000)])
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_expenses.py`
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.domain.expenses'`
 
-- [ ] **Шаг 3: Написать `backend/app/domain/expenses.py`**
+- [x] **Шаг 3: Написать `backend/app/domain/expenses.py`**
 
 ```python
 """Расходы: категории и сводка.
@@ -1513,17 +1519,17 @@ def totals_by_category(rows: list[tuple[str, int]]) -> list[CategoryTotal]:
     ]
 ```
 
-- [ ] **Шаг 4: Запустить тест**
+- [x] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_expenses.py -v`
 Expected: PASS, 9 passed
 
-- [ ] **Шаг 5: Прогнать все проверки бэкенда**
+- [x] **Шаг 5: Прогнать все проверки бэкенда**
 
 Run: `make check-backend`
 Expected: ruff, mypy, lint-imports, pytest — всё зелёное.
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/domain/expenses.py backend/tests/unit/test_expenses.py
@@ -1539,7 +1545,7 @@ git commit -m "feat: категории расходов и сводка по к
 **Files:**
 - Create: `backend/app/core/db.py`
 
-- [ ] **Шаг 1: Написать `backend/app/core/db.py`**
+- [x] **Шаг 1: Написать `backend/app/core/db.py`**
 
 ```python
 """Единственная точка доступа к базе в коде приложения.
@@ -1608,12 +1614,12 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         yield session
 ```
 
-- [ ] **Шаг 2: Проверить типы**
+- [x] **Шаг 2: Проверить типы**
 
 Run: `cd backend && uv run mypy app`
 Expected: Success, no issues
 
-- [ ] **Шаг 3: Проверить подключение к живой базе**
+- [x] **Шаг 3: Проверить подключение к живой базе**
 
 Подстановка драйвера `+asyncpg` сделана руками в `async_database_url`, и
 работает ли она против настоящего PostgreSQL, до сих пор нигде не
@@ -1641,7 +1647,7 @@ asyncio.run(main())
 трёх: не поднят PostgreSQL, нет роли или базы, либо драйвер подставлен
 неверно — и все три надо чинить сейчас, а не в задаче 17.
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 git add backend/app/core/db.py
@@ -1659,14 +1665,14 @@ git commit -m "feat: движок и сессия SQLAlchemy"
 - Create: `backend/app/features/expenses/__init__.py`
 - Create: `backend/app/features/expenses/models.py`
 
-- [ ] **Шаг 1: Создать пакеты фич**
+- [x] **Шаг 1: Создать пакеты фич**
 
 ```bash
 mkdir -p backend/app/features/{auth,users,expenses,audit,meta}
 touch backend/app/features/{auth,users,expenses,audit,meta}/__init__.py
 ```
 
-- [ ] **Шаг 2: Написать `backend/app/core/audit.py`**
+- [x] **Шаг 2: Написать `backend/app/core/audit.py`**
 
 Модель журнала лежит в `core`, а не в фиче: пишут в неё все фичи, а читает
 экран `features/audit`. Держать её в одной из фич значило бы, что остальные
@@ -1743,7 +1749,7 @@ def write_audit(
     )
 ```
 
-- [ ] **Шаг 2а: Написать `backend/tests/unit/test_audit.py`**
+- [x] **Шаг 2а: Написать `backend/tests/unit/test_audit.py`**
 
 Единственные тесты в этой задаче, и они про правило, а не про базу:
 настоящая сессия здесь мешала бы, поэтому подставляется запоминающая
@@ -1794,7 +1800,7 @@ def test_truncation_counts_characters_not_bytes():
     assert len(result) == DETAIL_MAX
 ```
 
-- [ ] **Шаг 3: Написать `backend/app/core/users.py`**
+- [x] **Шаг 3: Написать `backend/app/core/users.py`**
 
 Таблица учётных записей лежит в `core` по той же причине, что и журнал
 аудита: её читает `core/deps.py` на каждом запросе. В фиче она заставила бы
@@ -1872,7 +1878,7 @@ class User(Base):
 коде создания. Скрытый `server_default=now()` расходится с тем, что показано
 в тестах.
 
-- [ ] **Шаг 4: Написать `backend/app/features/expenses/models.py`**
+- [x] **Шаг 4: Написать `backend/app/features/expenses/models.py`**
 
 ```python
 """ОБРАЗЕЦ. Удаляется, когда появится первая настоящая фича."""
@@ -1902,7 +1908,7 @@ class Expense(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 ```
 
-- [ ] **Шаг 5: Добавить контракт независимости фич**
+- [x] **Шаг 5: Добавить контракт независимости фич**
 
 Пакеты всех пяти фич теперь существуют, значит контракт можно включить.
 Дописать в `backend/.importlinter`:
@@ -1924,7 +1930,7 @@ modules =
 не случайная связь: контракт придётся править руками, и правка будет видна
 в дифе.
 
-- [ ] **Шаг 6: Проверить типы и границы**
+- [x] **Шаг 6: Проверить типы и границы**
 
 Run: `cd backend && uv run mypy app && uv run --group lint lint-imports --config .importlinter`
 Expected: mypy Success; `Contracts: 2 kept, 0 broken.`
@@ -1935,7 +1941,7 @@ Expected: mypy Success; `Contracts: 2 kept, 0 broken.`
 две строки с `DETAIL_MAX`, прогони — должны упасть два теста из четырёх.
 Верни как было.
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add backend/app/core/audit.py backend/app/features/ backend/.importlinter \
@@ -1953,7 +1959,7 @@ git commit -m "feat: таблицы пользователей, журнала �
 - Create: `backend/alembic/script.py.mako`
 - Create: `backend/alembic/versions/<хеш>_init.py` (генерируется)
 
-- [ ] **Шаг 1: Развернуть асинхронный шаблон Alembic**
+- [x] **Шаг 1: Развернуть асинхронный шаблон Alembic**
 
 ```bash
 cd backend && uv run alembic init -t async alembic
@@ -1962,7 +1968,7 @@ cd backend && uv run alembic init -t async alembic
 Команда создаёт `alembic.ini`, `alembic/env.py` и `alembic/script.py.mako`.
 Дальше два файла правятся.
 
-- [ ] **Шаг 2: Убрать адрес базы из `backend/alembic.ini`**
+- [x] **Шаг 2: Убрать адрес базы из `backend/alembic.ini`**
 
 Найти строку `sqlalchemy.url = driver://user:pass@localhost/dbname` и
 заменить на пустое значение с комментарием:
@@ -2074,7 +2080,7 @@ else:
     run_migrations_online()
 ```
 
-- [ ] **Шаг 3а: Переписать шапку `backend/alembic/script.py.mako`**
+- [x] **Шаг 3а: Переписать шапку `backend/alembic/script.py.mako`**
 
 Стоковый шаблон рождает красные миграции: он пишет
 `from typing import Sequence, Union` и `Union[...]`, а на них ruff даёт
@@ -2106,7 +2112,7 @@ from alembic import op
 ${imports if imports else ""}
 ```
 
-- [ ] **Шаг 3б: Включить хуки форматирования в `backend/alembic.ini`**
+- [x] **Шаг 3б: Включить хуки форматирования в `backend/alembic.ini`**
 
 Шапку чинит шаблон, а тело миграции пишет сам генератор — кавычки,
 отступы внутри `create_table`, длинные строки со значениями enum. Без
@@ -2137,7 +2143,7 @@ ruff_format.module = ruff
 ruff_format.options = format REVISION_SCRIPT_FILENAME
 ```
 
-- [ ] **Шаг 4: Завести локальную роль и базы**
+- [x] **Шаг 4: Завести локальную роль и базы**
 
 Роль создаётся первой: `.env` подключается под ней, и без неё базы будут
 существовать, но подключиться к ним по строке из `.env` не выйдет —
@@ -2183,13 +2189,13 @@ psql "$(grep '^DATABASE_URL=' .env | sed 's/DATABASE_URL=//;s/\"//g')" \
 Если `createdb` не найден — PostgreSQL 18 не установлен; поставить через
 `brew install postgresql@18` (macOS) или `apt install postgresql-18` (Ubuntu).
 
-- [ ] **Шаг 5: Сгенерировать первую миграцию**
+- [x] **Шаг 5: Сгенерировать первую миграцию**
 
 ```bash
 cd backend && uv run alembic revision --autogenerate -m "init"
 ```
 
-- [ ] **Шаг 6: ПРОЧИТАТЬ сгенерированную миграцию глазами**
+- [x] **Шаг 6: ПРОЧИТАТЬ сгенерированную миграцию глазами**
 
 Это не формальность. `--autogenerate` сравнивает метаданные с базой и
 хорошо видит появление и исчезновение таблиц и колонок, но слеп к трём
@@ -2227,7 +2233,7 @@ cd backend && uv run alembic revision --autogenerate -m "init"
     sa.Enum(name="role").drop(op.get_bind())
 ```
 
-- [ ] **Шаг 7: Применить и проверить обратимость**
+- [x] **Шаг 7: Применить и проверить обратимость**
 
 ```bash
 cd backend && uv run alembic upgrade head && uv run alembic downgrade base && uv run alembic upgrade head
@@ -2236,7 +2242,7 @@ cd backend && uv run alembic upgrade head && uv run alembic downgrade base && uv
 Expected: все три команды проходят без ошибок. Именно этот прогон ловит
 забытое удаление enum.
 
-- [ ] **Шаг 8: Коммит**
+- [x] **Шаг 8: Коммит**
 
 ```bash
 git add backend/alembic.ini backend/alembic/
@@ -2253,7 +2259,7 @@ git commit -m "feat: миграции Alembic и начальная схема"
 - Create: `backend/app/core/security.py`
 - Create: `backend/tests/unit/test_password.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_password.py`:
 
@@ -2305,12 +2311,12 @@ def test_empty_password_still_hashes():
     assert verify_password("", hash_password("")) is True
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_password.py`
 Expected: FAIL — `ImportError: cannot import name 'hash_password'`
 
-- [ ] **Шаг 3: Написать `backend/app/core/security.py`**
+- [x] **Шаг 3: Написать `backend/app/core/security.py`**
 
 ```python
 """Пароли и подпись сессии.
@@ -2384,12 +2390,12 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(digest, expected)
 ```
 
-- [ ] **Шаг 4: Запустить тест**
+- [x] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_password.py -v`
 Expected: PASS, 7 passed
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 git add backend/app/core/security.py backend/tests/unit/test_password.py
@@ -2404,7 +2410,7 @@ git commit -m "feat: хеширование и проверка паролей �
 - Modify: `backend/app/core/security.py` (дописать в конец)
 - Create: `backend/tests/unit/test_token.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_token.py`:
 
@@ -2506,12 +2512,12 @@ def test_login_with_separator_inside_survives():
     assert verify_session_token(token, SECRET) is None
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_token.py`
 Expected: FAIL — `ImportError: cannot import name 'AUTH_COOKIE'`
 
-- [ ] **Шаг 3: Дописать в конец `backend/app/core/security.py`**
+- [x] **Шаг 3: Дописать в конец `backend/app/core/security.py`**
 
 Вместе с кодом ниже добавь `import base64` и `import time` в шапку файла.
 В задаче 12 их там нет намеренно: неиспользуемый импорт — это F401, и
@@ -2609,12 +2615,12 @@ def verify_session_token(
 Это правильное поведение — такой логин не должен существовать, и запрет на
 него ставит схема при создании пользователя (задача 18).
 
-- [ ] **Шаг 4: Запустить тест**
+- [x] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_token.py -v`
 Expected: PASS, 11 passed
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 git add backend/app/core/security.py backend/tests/unit/test_token.py
@@ -2634,7 +2640,7 @@ git commit -m "feat: подпись и проверка токена сесси�
 - Create: `backend/app/core/rate_limit.py`
 - Create: `backend/tests/unit/test_rate_limit.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_rate_limit.py`:
 
@@ -2785,12 +2791,12 @@ def test_lock_longer_than_window_is_rejected():
         Limit(max_attempts=5, window_seconds=60, lock_seconds=120)
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_rate_limit.py`
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.core.rate_limit'`
 
-- [ ] **Шаг 3: Написать `backend/app/core/rate_limit.py`**
+- [x] **Шаг 3: Написать `backend/app/core/rate_limit.py`**
 
 ```python
 """Ограничение попыток входа.
@@ -2972,12 +2978,12 @@ VPN, и общий порог означал бы «один человек тр
 **Известный долг остаётся:** счётчики живут в памяти процесса, перезапуск
 их обнуляет. Пока воркер один — это и есть счётчик контура.
 
-- [ ] **Шаг 4: Запустить тест**
+- [x] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_rate_limit.py -v`
 Expected: PASS, 13 passed
 
-- [ ] **Шаг 5: Доказать мутациями, что тесты не пустые**
+- [x] **Шаг 5: Доказать мутациями, что тесты не пустые**
 
 Каждая обязана уронить указанные тесты. После каждой возвращай файл и
 проверяй `git status`.
@@ -2990,7 +2996,7 @@ Expected: PASS, 13 passed
 | заменить условие в `__post_init__` на `if False:` | `test_lock_longer_than_window_is_rejected` |
 | `BY_ADDRESS` с `max_attempts=5` | `test_thresholds_differ_for_login_and_address` |
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/core/rate_limit.py backend/tests/unit/test_rate_limit.py
@@ -3005,7 +3011,7 @@ git commit -m "feat: ограничение попыток входа по ло�
 - Create: `backend/app/core/errors.py`
 - Create: `backend/tests/unit/test_errors.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_errors.py`:
 
@@ -3236,12 +3242,12 @@ class TestRegisteredHandlers:
             assert secret not in body
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_errors.py`
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.core.errors'`
 
-- [ ] **Шаг 3: Написать `backend/app/core/errors.py`**
+- [x] **Шаг 3: Написать `backend/app/core/errors.py`**
 
 ```python
 """Единый конверт ошибки: {"error": "текст", "field": "имя_поля"}.
@@ -3530,12 +3536,12 @@ Starlette сериализует ответ без экранирования, �
 **Ответ на невалидный ввод — 400, а не 422.** Клиенту незачем различать
 «схема не сошлась» и «правило не пустило» — для человека это одна ошибка.
 
-- [ ] **Шаг 4: Запустить тест**
+- [x] **Шаг 4: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/unit/test_errors.py -v`
 Expected: PASS, 17 passed
 
-- [ ] **Шаг 5: Доказать мутациями, что тесты не пустые**
+- [x] **Шаг 5: Доказать мутациями, что тесты не пустые**
 
 Перед каждой мутацией удаляй `__pycache__` — см. раздел «Как пользоваться
 этим планом». Указано имя теста, а не число падений.
@@ -3552,7 +3558,7 @@ Expected: PASS, 17 passed
 | убрать `or FALLBACK_MESSAGE` у `exc.message` | `test_empty_message_falls_back` |
 | `message = raw` вместо поиска в `_MESSAGES` | `test_pydantic_message_translated` |
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/core/errors.py backend/tests/unit/test_errors.py
@@ -3566,7 +3572,7 @@ git commit -m "feat: единый конверт ошибки и обработ�
 **Files:**
 - Create: `backend/app/core/deps.py`
 
-- [ ] **Шаг 1: Написать `backend/app/core/deps.py`**
+- [x] **Шаг 1: Написать `backend/app/core/deps.py`**
 
 ```python
 """Проверка сессии и роли.
@@ -3678,12 +3684,12 @@ def require_role(minimum: Role) -> Callable[[CurrentUser], Awaitable[CurrentUser
 что проверка стояла на странице. Здесь проверка стоит на API, и правильный
 ответ — 403; куда вести человека, решает роутер в браузере.
 
-- [ ] **Шаг 2: Проверить типы и границы**
+- [x] **Шаг 2: Проверить типы и границы**
 
 Run: `cd backend && uv run mypy app && uv run --group lint lint-imports --config .importlinter`
 Expected: mypy Success; контракты Kept.
 
-- [ ] **Шаг 3: Коммит**
+- [x] **Шаг 3: Коммит**
 
 ```bash
 git add backend/app/core/deps.py
@@ -3739,7 +3745,7 @@ Playwright**, а он накатывает схему миграциями. `dro
 - Create: `backend/app/main.py`
 - Create: `backend/tests/conftest.py`
 
-- [ ] **Шаг 1: Написать `backend/app/main.py`**
+- [x] **Шаг 1: Написать `backend/app/main.py`**
 
 Приложение появляется здесь, а не в конце фазы, и растёт по мере
 добавления фич. Иначе обвязка тестов, которая его импортирует, не работала
@@ -3982,13 +3988,13 @@ async def login_as(client: AsyncClient, make_user):
     return _login
 ```
 
-- [ ] **Шаг 3: Проверить, что обвязка работает**
+- [x] **Шаг 3: Проверить, что обвязка работает**
 
 Run: `cd backend && uv run pytest`
 Expected: 111 passed — фикстуры пока никем не используются, но обвязка
 импортируется и `make check` остаётся зелёным.
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 git add backend/app/main.py backend/tests/conftest.py
@@ -4008,7 +4014,7 @@ git commit -m "test: сборка приложения и фикстуры API-�
 - Modify: `backend/app/core/rate_limit.py` — метод `clear()`
 - Modify: `backend/app/core/users.py` — тип `Login`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_auth.py`:
 
@@ -4708,12 +4714,12 @@ def _isolated_limiters() -> None:
 `login_limiter` и `address_limiter` импортируются в шапке `conftest.py` из
 `app.core.rate_limit`.
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/api/test_auth.py`
 Expected: FAIL — маршрутов `/api/auth/*` ещё нет.
 
-- [ ] **Шаг 3: Добавить тип логина в `backend/app/core/users.py`**
+- [x] **Шаг 3: Добавить тип логина в `backend/app/core/users.py`**
 
 Над классом `User`:
 
@@ -4804,7 +4810,7 @@ Login = Annotated[
 прошедшее проверку, база отказалась бы принимать; отказ пришёл бы из
 драйвера, то есть пятисоткой вместо сообщения формы.
 
-- [ ] **Шаг 4: Написать `backend/app/features/auth/schemas.py`**
+- [x] **Шаг 4: Написать `backend/app/features/auth/schemas.py`**
 
 ```python
 from pydantic import BaseModel, Field
@@ -4836,7 +4842,7 @@ class OkResponse(BaseModel):
     ok: bool = True
 ```
 
-- [ ] **Шаг 5: Написать `backend/app/features/auth/service.py`**
+- [x] **Шаг 5: Написать `backend/app/features/auth/service.py`**
 
 ```python
 """Правила входа."""
@@ -5077,7 +5083,7 @@ async def ensure_bootstrap_user(session: AsyncSession) -> None:
     await session.commit()
 ```
 
-- [ ] **Шаг 6: Написать `backend/app/features/auth/router.py`**
+- [x] **Шаг 6: Написать `backend/app/features/auth/router.py`**
 
 ```python
 from fastapi import APIRouter, Request, Response
@@ -5153,7 +5159,7 @@ async def me(user: CurrentUserDep) -> CurrentUserResponse:
     )
 ```
 
-- [ ] **Шаг 7: Подключить роутер и завести первую учётную запись**
+- [x] **Шаг 7: Подключить роутер и завести первую учётную запись**
 
 В `backend/app/main.py` добавить роутер и жизненный цикл: первая учётная
 запись создаётся при старте, если таблица пуста.
@@ -5177,7 +5183,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 `lifespan=lifespan` передаётся в конструктор `FastAPI`, роутер
 подключается рядом с прочими.
 
-- [ ] **Шаг 8: Запустить тест**
+- [x] **Шаг 8: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_auth.py -v`
 Expected: PASS, 31 passed
@@ -5199,7 +5205,7 @@ Expected: PASS, 31 passed
 | из `require_role` убран `logger.warning` | `test_denied_access_reaches_the_server_log` |
 | `logger.warning` без логина и роли | тот же тест: «в логе нет ни логина, ни роли» |
 
-- [ ] **Шаг 9: Коммит**
+- [x] **Шаг 9: Коммит**
 
 ```bash
 git add backend/app/features/auth/ backend/app/main.py \
@@ -5216,7 +5222,7 @@ git commit -m "feat: вход, выход и текущий пользовате
 - Create: `backend/app/features/meta/router.py`
 - Create: `backend/tests/api/test_meta.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_meta.py`:
 
@@ -5712,7 +5718,7 @@ pytest, уезжает в OpenAPI как валидное и даёт `KeyError`
 `parents[N]` верен ровно для одного места в дереве, и два ручных счёта
 одного каталога расходятся молча.
 
-- [ ] **Шаг 4: Подключить роутер в `backend/app/main.py`**
+- [x] **Шаг 4: Подключить роутер в `backend/app/main.py`**
 
 ```python
 from app.features.meta.router import router as meta_router
@@ -5722,12 +5728,12 @@ app.include_router(meta_router, prefix="/api")
 
 Импорт — в шапку, вызов — после `register_error_handlers`.
 
-- [ ] **Шаг 5: Запустить тест**
+- [x] **Шаг 5: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_meta.py -v`
 Expected: PASS, 26 passed
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/features/meta/router.py backend/app/main.py \
@@ -5746,7 +5752,7 @@ git commit -m "feat: служебные маршруты health, build-info и �
 - Create: `backend/app/features/users/router.py`
 - Create: `backend/tests/api/test_users.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_users.py`:
 
@@ -6301,12 +6307,12 @@ async def test_unknown_user_is_404(client, login_as):
     assert response.status_code == 404
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/api/test_users.py`
 Expected: FAIL — маршрутов `/api/users` ещё нет.
 
-- [ ] **Шаг 3: Написать `backend/app/domain/text.py`**
+- [x] **Шаг 3: Написать `backend/app/domain/text.py`**
 
 Один вид «обычного текста» на всё приложение: имя человека, назначение
 расхода — всё, что человек набирает и потом читает глазами.
@@ -6358,7 +6364,7 @@ PlainText = Annotated[
 ]
 ```
 
-- [ ] **Шаг 4: Написать `backend/app/features/users/schemas.py`**
+- [x] **Шаг 4: Написать `backend/app/features/users/schemas.py`**
 
 ```python
 import uuid
@@ -6435,7 +6441,7 @@ class UpdateUserRequest(BaseModel):
     status: UserStatus | None = None
 ```
 
-- [ ] **Шаг 5: Написать `backend/app/features/users/service.py`**
+- [x] **Шаг 5: Написать `backend/app/features/users/service.py`**
 
 ```python
 """Правила работы с учётными записями."""
@@ -6629,7 +6635,7 @@ async def update_user(
     return user
 ```
 
-- [ ] **Шаг 6: Написать `backend/app/features/users/router.py`**
+- [x] **Шаг 6: Написать `backend/app/features/users/router.py`**
 
 ```python
 import uuid
@@ -6682,7 +6688,7 @@ SQLAlchemy. Приведения типов это не даёт: `id` объя�
 потому, что при `id: str` каждый вызов `model_validate` падал бы с «Input
 should be a valid string» — проверено на pydantic 2.13.
 
-- [ ] **Шаг 7: Подключить роутер в `backend/app/main.py`**
+- [x] **Шаг 7: Подключить роутер в `backend/app/main.py`**
 
 ```python
 from app.features.users.router import router as users_router
@@ -6690,12 +6696,12 @@ from app.features.users.router import router as users_router
 app.include_router(users_router, prefix="/api")
 ```
 
-- [ ] **Шаг 8: Запустить тест**
+- [x] **Шаг 8: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_users.py -v`
 Expected: PASS, 32 passed
 
-- [ ] **Шаг 9: Коммит**
+- [x] **Шаг 9: Коммит**
 
 ```bash
 git add backend/app/domain/text.py backend/app/features/users/ \
@@ -6716,7 +6722,7 @@ git commit -m "feat: список, создание и изменение учё
 - Create: `backend/app/features/expenses/router.py`
 - Create: `backend/tests/api/test_expenses.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_expenses.py`:
 
@@ -6948,12 +6954,12 @@ async def test_summary_returns_shares(client, login_as):
     assert rows[0]["share"] == 0.75
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/api/test_expenses.py`
 Expected: FAIL — маршрутов `/api/expenses` ещё нет.
 
-- [ ] **Шаг 3: Написать `backend/app/features/expenses/schemas.py`**
+- [x] **Шаг 3: Написать `backend/app/features/expenses/schemas.py`**
 
 ```python
 import uuid
@@ -7009,7 +7015,7 @@ class CategoryTotalOut(BaseModel):
     share: float
 ```
 
-- [ ] **Шаг 4: Написать `backend/app/features/expenses/service.py`**
+- [x] **Шаг 4: Написать `backend/app/features/expenses/service.py`**
 
 ```python
 """Правила работы с расходами. ОБРАЗЕЦ."""
@@ -7093,7 +7099,7 @@ async def delete_expense(
     await session.commit()
 ```
 
-- [ ] **Шаг 5: Написать `backend/app/features/expenses/router.py`**
+- [x] **Шаг 5: Написать `backend/app/features/expenses/router.py`**
 
 ```python
 import uuid
@@ -7163,7 +7169,7 @@ async def delete_expense(
 опасность, которой сейчас нет, читается как проверенное правило — и
 однажды его переставят, не поняв, чем рискуют.
 
-- [ ] **Шаг 6: Подключить роутер в `backend/app/main.py`**
+- [x] **Шаг 6: Подключить роутер в `backend/app/main.py`**
 
 ```python
 from app.features.expenses.router import router as expenses_router
@@ -7171,12 +7177,12 @@ from app.features.expenses.router import router as expenses_router
 app.include_router(expenses_router, prefix="/api")
 ```
 
-- [ ] **Шаг 7: Запустить тест**
+- [x] **Шаг 7: Запустить тест**
 
 Run: `cd backend && uv run pytest tests/api/test_expenses.py -v`
 Expected: PASS, 23 passed
 
-- [ ] **Шаг 8: Коммит**
+- [x] **Шаг 8: Коммит**
 
 ```bash
 git add backend/app/features/expenses/ backend/app/main.py backend/tests/api/test_expenses.py
@@ -7197,7 +7203,7 @@ git commit -m "feat: образцовая фича расходов"
 - Create: `backend/tests/unit/test_static.py`
 - Create: `backend/tests/api/test_route_guards.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_audit.py`:
 
@@ -7491,7 +7497,7 @@ async def test_the_build_is_not_a_way_out_of_the_directory(tmp_path, monkeypatch
         assert b"APP_AUTH_SECRET" not in body, target
 ```
 
-- [ ] **Шаг 2: Написать `backend/app/features/audit/service.py`**
+- [x] **Шаг 2: Написать `backend/app/features/audit/service.py`**
 
 ```python
 """Чтение журнала. Записывает в него core/audit.py, читает эта фича."""
@@ -7519,7 +7525,7 @@ async def list_entries(session: AsyncSession, limit: int) -> list[AuditLog]:
 роутере, учит обратному первым же примером. Контракт границ ниже это и
 закрепляет: у остальных фич такой сервис есть, у этой не было.
 
-- [ ] **Шаг 3: Написать `backend/app/features/audit/router.py`**
+- [x] **Шаг 3: Написать `backend/app/features/audit/router.py`**
 
 ```python
 import uuid
@@ -7565,7 +7571,7 @@ async def list_entries(
     ]
 ```
 
-- [ ] **Шаг 4: Написать `backend/app/core/static.py`**
+- [x] **Шаг 4: Написать `backend/app/core/static.py`**
 
 ```python
 """Раздача собранного фронтенда.
@@ -7623,7 +7629,7 @@ def mount_frontend(app: FastAPI) -> None:
         return FileResponse(DIST / "index.html")
 ```
 
-- [ ] **Шаг 5: Дописать `backend/app/main.py`**
+- [x] **Шаг 5: Дописать `backend/app/main.py`**
 
 Приложение собиралось по частям начиная с задачи 17: сюда уже подключены
 маршруты meta, auth, users и expenses. Осталось добавить журнал и раздачу
@@ -7723,7 +7729,7 @@ def create_app() -> FastAPI:
 # Имя `app` остаётся: `uvicorn app.main:app` и обвязка тестов ссылаются на него.
 app = create_app()
 ```
-- [ ] **Шаг 6: Написать `backend/app/openapi.py`**
+- [x] **Шаг 6: Написать `backend/app/openapi.py`**
 
 ```python
 """Печать схемы OpenAPI. Из неё генерируются типы клиента.
@@ -7739,12 +7745,12 @@ if __name__ == "__main__":
     print(json.dumps(app.openapi(), ensure_ascii=False, indent=2))
 ```
 
-- [ ] **Шаг 7: Прогнать все тесты бэкенда**
+- [x] **Шаг 7: Прогнать все тесты бэкенда**
 
 Run: `cd backend && uv run pytest -v`
 Expected: PASS — все тесты фаз 1–4 зелёные.
 
-- [ ] **Шаг 8: Тест, который сторожит проверку доступа на каждом маршруте**
+- [x] **Шаг 8: Тест, который сторожит проверку доступа на каждом маршруте**
 
 Правило «`require_role` на каждом маршруте» — обещание из `AGENTS.md`, и до
 этого шага его не держит ничто. Проверено мутацией: маршрут
@@ -8015,7 +8021,7 @@ def test_every_route_kind_is_understood():
 | `require_role` переписан без замыкания | `test_role_guard_is_recognised` — первым, с понятным именем |
 | лишний `app.mount(...)` | `test_static_mounts_are_declared` |
 
-- [ ] **Шаг 9: Добавить последний контракт границ**
+- [x] **Шаг 9: Добавить последний контракт границ**
 
 Все `router.py` теперь существуют. Дописать в `backend/.importlinter`:
 
@@ -8043,7 +8049,7 @@ forbidden_modules =
     app.core.audit
 ```
 
-- [ ] **Шаг 10: Проверить границы модулей**
+- [x] **Шаг 10: Проверить границы модулей**
 
 Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
 Expected: `Contracts: 3 kept, 0 broken.`
@@ -8051,7 +8057,7 @@ Expected: `Contracts: 3 kept, 0 broken.`
 Если третий контракт сразу broken — это не повод его ослабить. Значит роутер
 и правда лезет в модели мимо сервиса, и чинить надо роутер.
 
-- [ ] **Шаг 11: Поднять приложение руками**
+- [x] **Шаг 11: Поднять приложение руками**
 
 ```bash
 cd backend && uv run uvicorn app.main:app --port 8000
@@ -8063,7 +8069,7 @@ curl -s -X POST http://127.0.0.1:8000/api/auth/login \
 
 Expected: `{"status":"ok"}`; вход отвечает 200 и ставит куку `app_session`.
 
-- [ ] **Шаг 12: Коммит**
+- [x] **Шаг 12: Коммит**
 
 ```bash
 git add backend/app/features/audit/ backend/app/core/static.py \
@@ -8087,7 +8093,7 @@ git commit -m "feat: журнал аудита, раздача статики и
 - Create: `frontend/components.json`
 - Modify: `Makefile` — признак включения фронтенд-проверок
 
-- [ ] **Шаг 1: Переключить ворота фронтенд-проверок в `Makefile`**
+- [x] **Шаг 1: Переключить ворота фронтенд-проверок в `Makefile`**
 
 Сейчас `make check` включает фронтенд-проверки по наличию
 `frontend/node_modules`. Этой задачей каталог появляется — и ворота
@@ -8123,7 +8129,7 @@ check: check-backend
 Пока ворота закрыты, фронтенд проверяется вручную — в задачах 23 и 24 для
 этого есть отдельные шаги с `npx tsc --noEmit`.
 
-- [ ] **Шаг 2: Развернуть проект Vite**
+- [x] **Шаг 2: Развернуть проект Vite**
 
 ```bash
 npm create vite@latest frontend -- --template react-ts
@@ -8132,7 +8138,7 @@ npm install @tailwindcss/vite tailwindcss
 npm install -D @types/node
 ```
 
-- [ ] **Шаг 3: Написать `frontend/vite.config.ts`**
+- [x] **Шаг 3: Написать `frontend/vite.config.ts`**
 
 ```typescript
 import path from "node:path"
@@ -8166,7 +8172,7 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Шаг 4: Добавить псевдоним пути в ОБА tsconfig**
+- [x] **Шаг 4: Добавить псевдоним пути в ОБА tsconfig**
 
 В `frontend/tsconfig.app.json`, в секцию `compilerOptions`:
 
@@ -8186,7 +8192,7 @@ functioning in TypeScript 7.0`. Без него `paths` разрешаются �
 и сборка при этом осталась зелёной: компоненты никем не импортируются, пока
 экранов нет. Обнаруживается такое в задаче 26, за три задачи от причины.
 
-- [ ] **Шаг 5: Написать `frontend/src/index.css`**
+- [x] **Шаг 5: Написать `frontend/src/index.css`**
 
 ```css
 @import "tailwindcss";
@@ -8227,7 +8233,7 @@ functioning in TypeScript 7.0`. Без него `paths` разрешаются �
 выбранной. Светлая при этом сменится — то есть половина работы выглядит
 сделанной.
 
-- [ ] **Шаг 6: Поставить shadcn/ui**
+- [x] **Шаг 6: Поставить shadcn/ui**
 
 ```bash
 cd frontend && npx shadcn@latest init
@@ -8238,7 +8244,7 @@ cd frontend && npx shadcn@latest init
 стоит `"rsc": false` — серверных компонентов здесь нет, и с `true` CLI
 дописывал бы `"use client"` в каждый компонент.
 
-- [ ] **Шаг 7: Поставить компоненты, которые нужны экранам**
+- [x] **Шаг 7: Поставить компоненты, которые нужны экранам**
 
 ```bash
 cd frontend && npx shadcn@latest add alert avatar badge button card chart \
@@ -8246,12 +8252,12 @@ cd frontend && npx shadcn@latest add alert avatar badge button card chart \
   separator skeleton switch table tabs textarea tooltip
 ```
 
-- [ ] **Шаг 8: Проверить, что проект собирается**
+- [x] **Шаг 8: Проверить, что проект собирается**
 
 Run: `cd frontend && npx tsc --noEmit && npm run build`
 Expected: сборка проходит, появляется `frontend/dist/`.
 
-- [ ] **Шаг 9: Настроить линтер и убрать README от шаблона Vite**
+- [x] **Шаг 9: Настроить линтер и убрать README от шаблона Vite**
 
 `npm create vite` кладёт `frontend/README.md` — англоязычный текст про
 React Compiler и плагины Vite. Он уедет в каждую установку и будет
@@ -8281,7 +8287,7 @@ React Compiler и плагины Vite. Он уедет в каждую уста�
 предупреждение, которое видишь всегда, перестают читать вместе с
 настоящими.
 
-- [ ] **Шаг 10: Коммит**
+- [x] **Шаг 10: Коммит**
 
 ```bash
 git rm frontend/README.md
@@ -8298,7 +8304,7 @@ git commit -m "chore: каркас SPA на Vite с Tailwind и shadcn/ui"
 - Create: `frontend/src/api/schema.d.ts` (генерируется)
 - Modify: `frontend/package.json`
 
-- [ ] **Шаг 1: Поставить зависимости**
+- [x] **Шаг 1: Поставить зависимости**
 
 ```bash
 cd frontend && npm install openapi-fetch @tanstack/react-query
@@ -8319,7 +8325,7 @@ npm install -D openapi-typescript vitest
 не устаревает при обновлении TypeScript. Проверено: `npm ci` с нуля проходит,
 генератор с TS 6 работает без замечаний.
 
-- [ ] **Шаг 2: Добавить скрипты в `frontend/package.json`**
+- [x] **Шаг 2: Добавить скрипты в `frontend/package.json`**
 
 В секцию `scripts` дописать:
 
@@ -8330,7 +8336,7 @@ npm install -D openapi-typescript vitest
 
 и поставить `tsx`: `npm install -D tsx`.
 
-- [ ] **Шаг 3: Сгенерировать типы из схемы**
+- [x] **Шаг 3: Сгенерировать типы из схемы**
 
 Бэкенд должен быть остановлен — схема печатается без запуска сервера:
 
@@ -8340,7 +8346,7 @@ make openapi
 
 Expected: появляется `frontend/src/api/schema.d.ts` с типами всех маршрутов.
 
-- [ ] **Шаг 4: Написать `frontend/src/api/client.ts`**
+- [x] **Шаг 4: Написать `frontend/src/api/client.ts`**
 
 ```typescript
 import createClient from "openapi-fetch"
@@ -8407,7 +8413,7 @@ export function toApiError(error: unknown): ApiError {
 }
 ```
 
-- [ ] **Шаг 5: Проверить типы**
+- [x] **Шаг 5: Проверить типы**
 
 Run: `cd frontend && npx tsc -b --force`
 Expected: без ошибок.
@@ -8416,7 +8422,7 @@ Expected: без ошибок.
 `references`, и в не-build режиме tsc внутрь не заходит. Проверено — на файле
 с `const probe: number = "строка"` `--noEmit` возвращает 0.
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add frontend/src/api/ frontend/package.json frontend/package-lock.json
@@ -8440,7 +8446,7 @@ git commit -m "feat: типизированный клиент API из схем
 - Create: `frontend/scripts/apply-theme.ts`
 - Create: `frontend/vitest.config.ts`
 
-- [ ] **Шаг 1: Скопировать модуль тем и его тесты**
+- [x] **Шаг 1: Скопировать модуль тем и его тесты**
 
 ```bash
 SRC=/Users/minas/projects/app-template
@@ -8453,7 +8459,7 @@ cp $SRC/scripts/apply-theme.ts frontend/scripts/
 Файлы `lib/design/*.ts` не содержат импортов React, Next или Prisma —
 переносятся без правок.
 
-- [ ] **Шаг 2: Поправить путь к CSS в `frontend/scripts/apply-theme.ts`**
+- [x] **Шаг 2: Поправить путь к CSS в `frontend/scripts/apply-theme.ts`**
 
 Здесь файл темы называется `src/index.css`, а в соседнем шаблоне —
 `app/globals.css`. Правится только этот скрипт: `src/lib/design/` остаётся
@@ -8504,7 +8510,7 @@ import { buildThemeCss } from "../src/lib/design/css"
 import { THEMES, findTheme } from "../src/lib/design/themes"
 ```
 
-- [ ] **Шаг 3: Дописать семантические цвета в `@theme inline`**
+- [x] **Шаг 3: Дописать семантические цвета в `@theme inline`**
 
 Тема пишет токены `--success`, `--warning`, `--info`, `--highlight` с их
 `-foreground`, но утилит для них не существует, пока они не объявлены в
@@ -8527,7 +8533,7 @@ import { THEMES, findTheme } from "../src/lib/design/themes"
 в сборке, ни в консоли — только пустое место на экране, и искать его
 причину придётся в теме, а не в разметке.
 
-- [ ] **Шаг 4: Написать `frontend/vitest.config.ts` и `frontend/tsconfig.scripts.json`**
+- [x] **Шаг 4: Написать `frontend/vitest.config.ts` и `frontend/tsconfig.scripts.json`**
 
 ```typescript
 import path from "node:path"
@@ -8586,7 +8592,7 @@ export default defineConfig({
 запуске. Проверено — включение сразу нашло четыре ошибки в файле, который
 до того считался исправным.
 
-- [ ] **Шаг 5: Прогнать тесты и применить тему по умолчанию**
+- [x] **Шаг 5: Прогнать тесты и применить тему по умолчанию**
 
 ```bash
 cd frontend && npm run test && npm run theme -- blue
@@ -8600,13 +8606,13 @@ Expected: тесты зелёные; в `src/index.css` между маркер�
 23), так что с этого момента ворота открыты и красное на ветке снова видно
 сразу.
 
-- [ ] **Шаг 6: Прогнать полную проверку**
+- [x] **Шаг 6: Прогнать полную проверку**
 
 Run: `make check`
 Expected: зелёные и бэкенд, и фронтенд — строки про пропуск фронтенда больше
 нет.
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add frontend/src/lib/design/ frontend/scripts/ frontend/vitest.config.ts frontend/src/index.css
@@ -8625,13 +8631,13 @@ git commit -m "feat: пять тем оформления и команда их
 - Create: `frontend/src/router.tsx`
 - Modify: `frontend/src/main.tsx`
 
-- [ ] **Шаг 1: Поставить роутер**
+- [x] **Шаг 1: Поставить роутер**
 
 ```bash
 cd frontend && npm install @tanstack/react-router
 ```
 
-- [ ] **Шаг 2: Написать `frontend/src/lib/auth.ts`**
+- [x] **Шаг 2: Написать `frontend/src/lib/auth.ts`**
 
 ```typescript
 import { queryOptions } from "@tanstack/react-query"
@@ -8682,7 +8688,7 @@ export const currentUserQuery = queryOptions({
 })
 ```
 
-- [ ] **Шаг 3: Написать `frontend/src/components/page-main.tsx` и `frontend/src/components/request-failure.tsx`**
+- [x] **Шаг 3: Написать `frontend/src/components/page-main.tsx` и `frontend/src/components/request-failure.tsx`**
 
 ```typescript
 import type { ReactNode } from "react"
@@ -8752,7 +8758,7 @@ export function RequestFailure({
 }
 ```
 
-- [ ] **Шаг 4: Написать `frontend/src/components/site-nav.tsx`**
+- [x] **Шаг 4: Написать `frontend/src/components/site-nav.tsx`**
 
 ```typescript
 import { Link, useNavigate } from "@tanstack/react-router"
@@ -8840,7 +8846,7 @@ export function SiteNav({ user }: { user: CurrentUser }) {
 }
 ```
 
-- [ ] **Шаг 5: Написать `frontend/src/router.tsx`**
+- [x] **Шаг 5: Написать `frontend/src/router.tsx`**
 
 Имя файла `router.tsx`, а не `routes.tsx`: рядом лежит каталог
 `src/routes/`, и путь `@/routes` разрешался бы то в файл, то в каталог —
@@ -8976,7 +8982,7 @@ declare module "@tanstack/react-router" {
 }
 ```
 
-- [ ] **Шаг 6: Написать `frontend/src/main.tsx`**
+- [x] **Шаг 6: Написать `frontend/src/main.tsx`**
 
 ```typescript
 import { StrictMode } from "react"
@@ -9008,7 +9014,7 @@ createRoot(document.getElementById("root")!).render(
 )
 ```
 
-- [ ] **Шаг 7: Написать заглушки страниц и убрать мусор шаблона Vite**
+- [x] **Шаг 7: Написать заглушки страниц и убрать мусор шаблона Vite**
 
 `router.tsx` ссылается на семь страниц. Пока их нет, `tsc` красный, а
 значит красный и `make check` — на все шесть задач вперёд. Проверка,
@@ -9372,7 +9378,7 @@ export function ExpensesPage() {
 никто. Шаблон, приехавший с чужими картинками и стилями, учит тому, что
 мёртвый код — это нормально.
 
-- [ ] **Шаг 8: Прогнать проверку и закоммитить**
+- [x] **Шаг 8: Прогнать проверку и закоммитить**
 
 Run: `make check`
 Expected: зелёный целиком — бэкенд, типы фронтенда, его тесты.
@@ -9392,7 +9398,7 @@ git commit -m "feat: роутер, гейт доступа и оболочка �
 **Files:**
 - Create: `frontend/src/routes/login.tsx`
 
-- [ ] **Шаг 1: Поставить формы**
+- [x] **Шаг 1: Поставить формы**
 
 ```bash
 cd frontend && npm install react-hook-form @hookform/resolvers zod
@@ -9526,7 +9532,7 @@ export function LoginPage() {
 }
 ```
 
-- [ ] **Шаг 3: Прогнать проверку и закоммитить**
+- [x] **Шаг 3: Прогнать проверку и закоммитить**
 
 Run: `make check`
 Expected: зелёный целиком.
@@ -9544,7 +9550,7 @@ git commit -m "feat: экран входа"
 - Create: `frontend/src/routes/home.tsx`
 - Create: `frontend/src/components/bootstrap-warning.tsx`
 
-- [ ] **Шаг 1: Написать `frontend/src/components/bootstrap-warning.tsx`**
+- [x] **Шаг 1: Написать `frontend/src/components/bootstrap-warning.tsx`**
 
 ```typescript
 import { TriangleAlert } from "lucide-react"
@@ -9575,7 +9581,7 @@ export function BootstrapWarning({ user }: { user: CurrentUser }) {
 }
 ```
 
-- [ ] **Шаг 2: Написать `frontend/src/routes/home.tsx`**
+- [x] **Шаг 2: Написать `frontend/src/routes/home.tsx`**
 
 ```typescript
 import { Link } from "@tanstack/react-router"
@@ -9647,7 +9653,7 @@ export function HomePage() {
 }
 ```
 
-- [ ] **Шаг 3: Прогнать проверку и закоммитить**
+- [x] **Шаг 3: Прогнать проверку и закоммитить**
 
 Run: `make check`
 Expected: зелёный целиком.
@@ -9665,7 +9671,7 @@ git commit -m "feat: стартовая страница и предупрежд
 - Create: `frontend/src/lib/format.ts`
 - Create: `frontend/src/routes/expenses.tsx`
 
-- [ ] **Шаг 1: Написать `frontend/src/lib/format.ts`**
+- [x] **Шаг 1: Написать `frontend/src/lib/format.ts`**
 
 ```typescript
 /**
@@ -9712,7 +9718,7 @@ export function formatDateTime(iso: string): string {
 }
 ```
 
-- [ ] **Шаг 2: Написать `frontend/src/routes/expenses.tsx`**
+- [x] **Шаг 2: Написать `frontend/src/routes/expenses.tsx`**
 
 ```typescript
 import { useForm } from "react-hook-form"
@@ -10044,7 +10050,7 @@ export function ExpensesPage() {
 }
 ```
 
-- [ ] **Шаг 3: Прогнать проверку и закоммитить**
+- [x] **Шаг 3: Прогнать проверку и закоммитить**
 
 Run: `make check`
 Expected: зелёный целиком.
@@ -10061,7 +10067,7 @@ git commit -m "feat: экран расходов со сводкой по кат
 **Files:**
 - Create: `frontend/src/routes/users.tsx`
 
-- [ ] **Шаг 1: Написать `frontend/src/routes/users.tsx`**
+- [x] **Шаг 1: Написать `frontend/src/routes/users.tsx`**
 
 ```typescript
 import { useForm } from "react-hook-form"
@@ -10396,7 +10402,7 @@ export function UsersPage() {
 }
 ```
 
-- [ ] **Шаг 2: Прогнать проверку и закоммитить**
+- [x] **Шаг 2: Прогнать проверку и закоммитить**
 
 Run: `make check`
 Expected: зелёный целиком.
@@ -10413,7 +10419,7 @@ git commit -m "feat: экран учётных записей"
 **Files:**
 - Create: `frontend/src/routes/audit.tsx`
 
-- [ ] **Шаг 1: Написать `frontend/src/routes/audit.tsx`**
+- [x] **Шаг 1: Написать `frontend/src/routes/audit.tsx`**
 
 ```typescript
 import { useQuery } from "@tanstack/react-query"
@@ -10515,7 +10521,7 @@ export function AuditPage() {
 }
 ```
 
-- [ ] **Шаг 2: Прогнать проверку и закоммитить**
+- [x] **Шаг 2: Прогнать проверку и закоммитить**
 
 Run: `make check`
 Expected: зелёный целиком.
@@ -10534,7 +10540,7 @@ git commit -m "feat: экран журнала аудита"
 - Create: `frontend/src/routes/docs.tsx`
 - Create: `frontend/src/components/markdown-view.tsx`
 
-- [ ] **Шаг 1: Перенести витрину из эталона**
+- [x] **Шаг 1: Перенести витрину из эталона**
 
 ```bash
 SRC=/Users/minas/projects/app-template
@@ -10550,7 +10556,7 @@ cp $SRC/app/design/_components/theme-picker.tsx frontend/src/routes/design-parts
 - заменить `next/link` на `@tanstack/react-router` (`Link`, проп `to` вместо
   `href`), если встретится.
 
-- [ ] **Шаг 2: Написать `frontend/src/routes/design.tsx`**
+- [x] **Шаг 2: Написать `frontend/src/routes/design.tsx`**
 
 ```typescript
 import { PageMain } from "@/components/page-main"
@@ -10602,7 +10608,7 @@ export function DesignPage() {
 }
 ```
 
-- [ ] **Шаг 3: Написать `frontend/src/components/markdown-view.tsx`**
+- [x] **Шаг 3: Написать `frontend/src/components/markdown-view.tsx`**
 
 ```bash
 cd frontend && npm install react-markdown remark-gfm
@@ -10752,7 +10758,7 @@ export function MarkdownView({ content }: { content: string }) {
 }
 ```
 
-- [ ] **Шаг 4: Написать `frontend/src/routes/docs.tsx`**
+- [x] **Шаг 4: Написать `frontend/src/routes/docs.tsx`**
 
 ```typescript
 import { useState } from "react"
@@ -10844,12 +10850,12 @@ export function DocsPage() {
 }
 ```
 
-- [ ] **Шаг 5: Собрать фронтенд целиком**
+- [x] **Шаг 5: Собрать фронтенд целиком**
 
 Run: `cd frontend && npx tsc --noEmit && npm run build`
 Expected: типы сходятся, `frontend/dist/` собран.
 
-- [ ] **Шаг 6: Проверить в живом браузере**
+- [x] **Шаг 6: Проверить в живом браузере**
 
 ```bash
 cd backend && uv run uvicorn app.main:app --port 8000 &
@@ -10860,7 +10866,7 @@ cd frontend && npm run dev
 обе темы (светлая и тёмная), мобильную ширину, чистую консоль, пустые
 состояния таблиц. Часть ошибок видна только в живом браузере.
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add frontend/
@@ -10877,13 +10883,13 @@ git commit -m "feat: экраны входа, расходов, людей, жу
 - Create: `frontend/playwright.config.ts`
 - Create: `frontend/tests/e2e/auth.spec.ts`
 
-- [ ] **Шаг 1: Поставить Playwright**
+- [x] **Шаг 1: Поставить Playwright**
 
 ```bash
 cd frontend && npm install -D @playwright/test && npx playwright install chromium
 ```
 
-- [ ] **Шаг 2: Написать конфигурацию**
+- [x] **Шаг 2: Написать конфигурацию**
 
 Create `frontend/playwright.config.ts`:
 
@@ -11003,7 +11009,7 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Шаг 3: Написать смоук входа и ролей**
+- [x] **Шаг 3: Написать смоук входа и ролей**
 
 Create `frontend/tests/e2e/auth.spec.ts`:
 
@@ -11179,7 +11185,7 @@ test("лежащий бэкенд показывает отказ, а не фо�
 })
 ```
 
-- [ ] **Шаг 4: Прогнать**
+- [x] **Шаг 4: Прогнать**
 
 Run: `cd frontend && DATABASE_URL_E2E=postgresql://... npx playwright test`
 Expected: 6 passed
@@ -11195,7 +11201,7 @@ Expected: 6 passed
 | из `router.tsx` убран `errorComponent` закрытой части | тот же сценарий: бросок доходит до умолчания роутера |
 | убрана строка `await expect(page.getByRole("link", { name: "Расходы" })).toBeVisible()` | ничего, и это причина, по которой она есть: `toHaveCount(0)` сходится на ещё не отрисованной странице, и мутация со ссылкой для `editor` проходила мимо |
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 git add frontend/playwright.config.ts frontend/tests/
@@ -11209,7 +11215,7 @@ git commit -m "test: сквозной смоук входа и разграни�
 **Files:**
 - Create: `frontend/tests/e2e/expenses.spec.ts`
 
-- [ ] **Шаг 1: Написать сценарии расходов**
+- [x] **Шаг 1: Написать сценарии расходов**
 
 Create `frontend/tests/e2e/expenses.spec.ts`:
 
@@ -11329,7 +11335,7 @@ test("изменение попадает в журнал", async ({ page }) => 
 })
 ```
 
-- [ ] **Шаг 2: Прогнать все e2e**
+- [x] **Шаг 2: Прогнать все e2e**
 
 Run: `cd frontend && npx playwright test`
 Expected: 11 passed
@@ -11342,7 +11348,7 @@ Expected: 11 passed
 | в `audit.tsx` из `ENTITY_LABEL` убран ключ `Expense` | тот же сценарий: в строке «расход», а не `Expense` |
 | поиск строки журнала по «admin» и «создание» без привязки к сумме | ничего: такую же запись оставляет заведение учётной записи в соседнем сценарии, и при выключенном `write_audit` проверка остаётся зелёной. Воспроизведено — 5 passed на сломанном коде |
 
-- [ ] **Шаг 3: Коммит**
+- [x] **Шаг 3: Коммит**
 
 ```bash
 git add frontend/tests/e2e/expenses.spec.ts
@@ -11358,7 +11364,7 @@ git commit -m "test: сквозной смоук образцовой фичи �
 **Files:**
 - Create: `.github/workflows/ci.yml`
 
-- [ ] **Шаг 1: Написать `.github/workflows/ci.yml`**
+- [x] **Шаг 1: Написать `.github/workflows/ci.yml`**
 
 ```yaml
 name: ci
@@ -11462,7 +11468,7 @@ jobs:
         working-directory: frontend
 ```
 
-- [ ] **Шаг 2: Коммит**
+- [x] **Шаг 2: Коммит**
 
 ```bash
 git add .github/workflows/ci.yml
@@ -11476,7 +11482,7 @@ git commit -m "ci: проверки на feature-ветке"
 **Files:**
 - Create: `.github/workflows/deploy.yml`
 
-- [ ] **Шаг 1: Написать `.github/workflows/deploy.yml`**
+- [x] **Шаг 1: Написать `.github/workflows/deploy.yml`**
 
 ```yaml
 name: deploy
@@ -11681,7 +11687,7 @@ Heredoc здесь **без кавычек** вокруг `EOF`: внутрь п
 `set -u` пропущенный слэш роняет доставку с «unbound variable», и
 `bash -n` этого не поймает.
 
-- [ ] **Шаг 2: Коммит**
+- [x] **Шаг 2: Коммит**
 
 ```bash
 git add .github/workflows/deploy.yml
@@ -11695,7 +11701,7 @@ git commit -m "ci: доставка на контур со сборкой фро
 **Files:**
 - Create: `.github/workflows/backup.yml`
 
-- [ ] **Шаг 1: Написать `.github/workflows/backup.yml`**
+- [x] **Шаг 1: Написать `.github/workflows/backup.yml`**
 
 ```yaml
 name: backup-check
@@ -11731,7 +11737,7 @@ jobs:
           EOF
 ```
 
-- [ ] **Шаг 2: Коммит**
+- [x] **Шаг 2: Коммит**
 
 ```bash
 git add .github/workflows/backup.yml
@@ -11748,7 +11754,7 @@ git commit -m "ci: ежедневная проверка свежести рез
 - Create: `.cursor/rules/project.mdc`
 - Create: `.claude/skills/{brainstorming,writing-plans,executing-plans}/`
 
-- [ ] **Шаг 0: Перенести скиллы порядка работы**
+- [x] **Шаг 0: Перенести скиллы порядка работы**
 
 ```bash
 SRC=/Users/minas/projects/app-template/.claude/skills
@@ -11768,7 +11774,7 @@ cp -R $SRC/brainstorming $SRC/writing-plans $SRC/executing-plans .claude/skills/
 эталона, а здесь единственная точка входа — `make check` (и
 `cd frontend && npx playwright test` после правок сценариев).
 
-- [ ] **Шаг 1: Написать `AGENTS.md`**
+- [x] **Шаг 1: Написать `AGENTS.md`**
 
 Взять `AGENTS.md` эталона как основу:
 
@@ -12009,7 +12015,7 @@ cp /Users/minas/projects/app-template/AGENTS.md AGENTS.md
 чего-то в прогоне нет, — так и родилась строчка «линтер `make check` не
 зовёт» в разделе про цвета, когда линтер уже был на месте.
 
-- [ ] **Шаг 2: Написать `CLAUDE.md`**
+- [x] **Шаг 2: Написать `CLAUDE.md`**
 
 ```markdown
 # CLAUDE.md
@@ -12026,7 +12032,7 @@ cp /Users/minas/projects/app-template/AGENTS.md AGENTS.md
 <!-- BOOTSTRAP_ONLY_END -->
 ```
 
-- [ ] **Шаг 3: Написать `.cursor/rules/project.mdc`**
+- [x] **Шаг 3: Написать `.cursor/rules/project.mdc`**
 
 ```markdown
 ---
@@ -12038,7 +12044,7 @@ alwaysApply: true
 расходятся, и через полгода никто не знает, какая настоящая.
 ```
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 git add AGENTS.md CLAUDE.md .cursor/
@@ -12055,7 +12061,7 @@ git commit -m "docs: правила работы над проектом"
 - Create: `.cursor/commands/{onboarding,ship,status,logs,rollback}.md`
 - Create: `scripts/wait-for-run.sh`
 
-- [ ] **Шаг 1: Перенести тексты команд из эталона**
+- [x] **Шаг 1: Перенести тексты команд из эталона**
 
 ```bash
 SRC=/Users/minas/projects/app-template
@@ -12065,7 +12071,7 @@ cp $SRC/.claude/commands/*.md .claude/commands/
 cp $SRC/.cursor/commands/*.md .cursor/commands/
 ```
 
-- [ ] **Шаг 2: Заменить команды стека в `docs/commands/ship.md`**
+- [x] **Шаг 2: Заменить команды стека в `docs/commands/ship.md`**
 
 Найти блок проверок перед доставкой и заменить на:
 
@@ -12080,7 +12086,7 @@ make check
 git diff <точка-отката>..origin/main --stat -- backend/alembic/versions/
 ```
 
-- [ ] **Шаг 2а: Дописать в `rollback.md` и `ship.md` две вещи, которых нет
+- [x] **Шаг 2а: Дописать в `rollback.md` и `ship.md` две вещи, которых нет
       в эталоне**
 
 Первая: **откат merge-коммита не возвращается обычным `/ship`.** После
@@ -12126,7 +12132,7 @@ git commit -m "revert: откат доставки <коммит> (миграц�
 Обе вещи короткой строкой продублировать в разделе «Доставка» `AGENTS.md`:
 его читают чаще, чем тексты команд.
 
-- [ ] **Шаг 2б: Завести `scripts/wait-for-run.sh` и звать его вместо
+- [x] **Шаг 2б: Завести `scripts/wait-for-run.sh` и звать его вместо
       подстановки `-L1`**
 
 В эталоне все четыре ожидания прогона написаны так:
@@ -12160,7 +12166,7 @@ sh scripts/wait-for-run.sh ci.yml       # прогон ветки
 sh scripts/wait-for-run.sh deploy.yml   # доставка
 ```
 
-- [ ] **Шаг 2в: Починить в `status.md` и `logs.md` способ доступа и предмет
+- [x] **Шаг 2в: Починить в `status.md` и `logs.md` способ доступа и предмет
       проверки**
 
 Первое: обе команды в эталоне зовут `ssh ops@<сервер>`, а установка заводит
@@ -12190,7 +12196,7 @@ curl -s -o /dev/null -w "%{http_code}" https://<адрес>/api/health
 и считать живость по нему. Тот же адрес открыт снаружи и авторизации не
 требует — им же пользуется доставка.
 
-- [ ] **Шаг 3: Переписать `docs/commands/onboarding.md` под Python-стек**
+- [x] **Шаг 3: Переписать `docs/commands/onboarding.md` под Python-стек**
 
 Заменить раздел проверки окружения:
 
@@ -12247,7 +12253,7 @@ CI колесо есть, и ничего этого не происходит.
 ROLE`, и тогда установка не проходит ни на macOS, ни на Linux. Так и вышло
 на первом прогоне. Перенося блок, сверяй его с задачей 11 целиком.
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 git add docs/commands/ .claude/commands/ .cursor/commands/
@@ -12261,13 +12267,13 @@ git commit -m "docs: команды установки, доставки, сос
 **Files:**
 - Create: `CHECKLIST.md`
 
-- [ ] **Шаг 1: Перенести структуру из эталона**
+- [x] **Шаг 1: Перенести структуру из эталона**
 
 ```bash
 cp /Users/minas/projects/app-template/CHECKLIST.md CHECKLIST.md
 ```
 
-- [ ] **Шаг 2: Переписать таблицу «Что приложение умеет»**
+- [x] **Шаг 2: Переписать таблицу «Что приложение умеет»**
 
 ```markdown
 | Возможность | Состояние | Примечание |
@@ -12295,7 +12301,7 @@ cp /Users/minas/projects/app-template/CHECKLIST.md CHECKLIST.md
 | Почтовые уведомления | `absent` | |
 ```
 
-- [ ] **Шаг 3: Переписать таблицу «Известный технический долг»**
+- [x] **Шаг 3: Переписать таблицу «Известный технический долг»**
 
 ```markdown
 | Что | Когда всплывёт |
@@ -12305,7 +12311,7 @@ cp /Users/minas/projects/app-template/CHECKLIST.md CHECKLIST.md
 | Провижинер общий с `app-template-ts` | Своей копии `scripts/server/` здесь нет намеренно. Понадобится провижинеру разойтись по языкам — он переезжает в отдельный репозиторий, общий для обоих шаблонов |
 ```
 
-- [ ] **Шаг 4: Переписать «Проверки окружения»**
+- [x] **Шаг 4: Переписать «Проверки окружения»**
 
 ```markdown
 - [ ] `git`, `uv` (Python 3.14), Node.js 24, PostgreSQL 18, `gh` установлены
@@ -12316,7 +12322,7 @@ cp /Users/minas/projects/app-template/CHECKLIST.md CHECKLIST.md
 - [ ] Контур отвечает, первый деплой прошёл
 ```
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 git add CHECKLIST.md
@@ -12332,7 +12338,7 @@ git commit -m "docs: реестр возможностей и техническ
 - Create: `ONBOARDING.md`
 - Create: `scripts/onboarding-check.mjs`
 
-- [ ] **Шаг 1: Написать `README.md`**
+- [x] **Шаг 1: Написать `README.md`**
 
 ```markdown
 # app-template-py
@@ -12418,7 +12424,7 @@ CHECKLIST.md и AGENTS.md, затем выполни docs/commands/onboarding.md
 шаблона.
 ```
 
-- [ ] **Шаг 2: Написать `ONBOARDING.md`**
+- [x] **Шаг 2: Написать `ONBOARDING.md`**
 
 ```markdown
 # Как здесь работают
@@ -12473,7 +12479,7 @@ make dev
 | Как откатить | `/rollback` |
 ```
 
-- [ ] **Шаг 3: Написать `scripts/onboarding-check.mjs`**
+- [x] **Шаг 3: Написать `scripts/onboarding-check.mjs`**
 
 ```javascript
 #!/usr/bin/env node
@@ -12716,7 +12722,7 @@ console.log(failed === 0 ? "Установка завершена." : `Оста�
 process.exit(failed === 0 ? 0 : 1)
 ```
 
-- [ ] **Шаг 4: Проверить скрипт подделкой**
+- [x] **Шаг 4: Проверить скрипт подделкой**
 
 Скрипт, который печатает «Установка завершена», обязан быть проверен в обе
 стороны — на настоящей установке его зелень принимают за доказательство, и
@@ -12739,7 +12745,7 @@ process.exit(failed === 0 ? 0 : 1)
 Проверять надо каждый случай отдельно: проверка, которая краснеет только
 заодно с другими, ничего не сторожит.
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 git add README.md ONBOARDING.md scripts/onboarding-check.mjs
@@ -12753,7 +12759,7 @@ git commit -m "docs: README, гайд для команды и проверка 
 **Files:**
 - Create: `docs/superpowers/runbooks/server-setup.md`
 
-- [ ] **Шаг 1: Написать `docs/superpowers/runbooks/server-setup.md`**
+- [x] **Шаг 1: Написать `docs/superpowers/runbooks/server-setup.md`**
 
 ```markdown
 # Контур на общем VPS
@@ -12843,7 +12849,7 @@ pm2, а не systemd — потому что вся эксплуатация с�
 лежащей базе.
 ```
 
-- [ ] **Шаг 2: Прогнать всё**
+- [x] **Шаг 2: Прогнать всё**
 
 ```bash
 make check
@@ -12852,7 +12858,7 @@ cd frontend && npx playwright test
 
 Expected: обе половины зелёные, 8 e2e passed.
 
-- [ ] **Шаг 3: Проверить обратимость миграций начисто**
+- [x] **Шаг 3: Проверить обратимость миграций начисто**
 
 ```bash
 cd backend && uv run alembic downgrade base && uv run alembic upgrade head
@@ -12860,7 +12866,7 @@ cd backend && uv run alembic downgrade base && uv run alembic upgrade head
 
 Expected: обе команды проходят.
 
-- [ ] **Шаг 4: Проверить, что контракты границ держатся**
+- [x] **Шаг 4: Проверить, что контракты границ держатся**
 
 ```bash
 cd backend && uv run --group lint lint-imports --config .importlinter
@@ -12868,7 +12874,7 @@ cd backend && uv run --group lint lint-imports --config .importlinter
 
 Expected: три контракта Kept.
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 git add docs/superpowers/runbooks/
