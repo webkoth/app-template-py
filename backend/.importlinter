@@ -43,6 +43,7 @@ source_modules =
     app.features.auth.router
     app.features.users.router
     app.features.expenses.router
+    app.features.datasets.router
     app.features.audit.router
     app.features.meta.router
 forbidden_modules =

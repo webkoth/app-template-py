@@ -215,6 +215,12 @@ def test_the_rest_of_the_api_is_guarded_by_role():
         "GET /api/expenses",
         "POST /api/expenses",
         "DELETE /api/expenses/{expense_id}",
+        # Таблицы: смотрит их любой вошедший, а загружает и удаляет только
+        # editor. В FULLY_OPEN и LOGIN_ONLY им места нет — загруженная
+        # таблица это данные приложения, а не общедоступный файл.
+        "GET /api/datasets",
+        "POST /api/datasets",
+        "DELETE /api/datasets/{dataset_id}",
         "GET /api/audit",
     ):
         assert name in guarded, f"{name} больше не проверяет роль"

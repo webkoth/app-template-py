@@ -12,6 +12,7 @@ from app.core.static import mount_frontend
 from app.features.audit.router import router as audit_router
 from app.features.auth.router import router as auth_router
 from app.features.auth.service import ensure_bootstrap_user
+from app.features.datasets.router import router as datasets_router
 from app.features.expenses.router import router as expenses_router
 from app.features.meta.router import router as meta_router
 from app.features.users.router import router as users_router
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
         auth_router,
         users_router,
         expenses_router,
+        datasets_router,
         audit_router,
     ):
         app.include_router(router, prefix="/api", responses=ERROR_RESPONSES)
