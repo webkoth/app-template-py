@@ -52,7 +52,11 @@ jobs:
         run: psql -h localhost -U postgres -c 'CREATE DATABASE apptemplatepy_e2e'
 
       - name: Поставить uv и Python
-        uses: astral-sh/setup-uv@v10
+        # Полная версия, а не «@v10»: у setup-uv подвижного мажорного тега
+        # выше v7 нет вовсе, и @v10 не разрешается — прогон падает на
+        # подготовке job, до единой своей команды. Проверено первым же
+        # настоящим прогоном.
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.14"
           enable-cache: true

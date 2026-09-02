@@ -11421,7 +11421,7 @@ jobs:
         run: psql -h localhost -U postgres -c 'CREATE DATABASE apptemplate_e2e'
 
       - name: Поставить uv и Python
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.14"
           enable-cache: true
@@ -11529,7 +11529,7 @@ jobs:
           PGPASSWORD: postgres
         run: psql -h localhost -U postgres -c 'CREATE DATABASE apptemplate_e2e'
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.14"
           enable-cache: true
