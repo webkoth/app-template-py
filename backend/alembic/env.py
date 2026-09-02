@@ -24,11 +24,12 @@ from app.core.db import Base
 # Импорт ради регистрации таблиц в Base.metadata: без него autogenerate
 # видит пустую схему и предлагает удалить всё, что есть в базе.
 #
-# Директива ниже не даёт ruff слить эти три строки с импортами выше и
+# Директива ниже не даёт ruff слить этот блок с импортами выше и
 # разложить всё по алфавиту: тогда комментарий остался бы над одним
-# случайным импортом из трёх, а объяснять он должен все три.
+# случайным импортом, а объяснять он должен их все.
 # isort: split
 from app.core.audit import AuditLog  # noqa: F401
+from app.core.jobs import Job  # noqa: F401
 from app.core.users import User  # noqa: F401
 from app.features.expenses.models import Expense  # noqa: F401
 
