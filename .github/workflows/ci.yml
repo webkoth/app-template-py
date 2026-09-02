@@ -68,45 +68,32 @@ jobs:
       - run: uv sync --frozen --group lint
         working-directory: backend
 
-      - run: uv run ruff format --check .
-        working-directory: backend
-      - run: uv run ruff check .
-        working-directory: backend
-      - run: uv run mypy app
-        working-directory: backend
-      - run: uv run --group lint lint-imports --config .importlinter
-        working-directory: backend
-
-      # Схема накатывается до тестов: API-тесты идут в настоящую базу.
-      - run: uv run alembic upgrade head
-        working-directory: backend
-      - run: uv run pytest
-        working-directory: backend
-
+      # npm ci обязателен ДО `make check`: половину фронтенда тот проверяет
+      # только при существующем frontend/node_modules, а без него громко
+      # отказывается работать. Порядок здесь несущий, а не косметический.
       - run: npm ci
         working-directory: frontend
-      # tsc -b --force, а не tsc --noEmit, и это ровно та же поправка, что в
-      # Makefile. Корневой tsconfig.json — это `files: []` плюс references, и
-      # в не-build режиме tsc в references не заходит: на файле с
-      # `const probe: number = "строка"` --noEmit возвращает 0, а -b — 2. То
-      # есть шаг с --noEmit не проверял бы во фронтенде ничего и при этом
-      # выглядел бы в логе прогона сделанной работой. --force обязателен:
-      # без него tsc верит кэшу сборки и молчит.
-      - run: npx tsc -b --force
-        working-directory: frontend
-      - run: npm run test
-        working-directory: frontend
 
-      # Дрейф контракта: бэкенд поменял схему, фронт не перегенерировал
-      # типы. Ловится здесь, а не в бою.
-      - name: Типы клиента совпадают со схемой
-        run: |
-          cd backend && uv run python -m app.openapi > /tmp/openapi.json
-          cd ../frontend && npx openapi-typescript /tmp/openapi.json -o /tmp/schema.d.ts
-          diff -u src/api/schema.d.ts /tmp/schema.d.ts || {
-            echo "::error::Типы клиента разошлись со схемой. Выполни: make openapi"
-            exit 1
-          }
+      # Миграции накатываются на рабочую базу — так проверяется, что они
+      # ложатся на пустую. `make check` этого не делает намеренно: API-тесты
+      # создают схему из метаданных и в ОТДЕЛЬНОЙ базе.
+      - run: uv run alembic upgrade head
+        working-directory: backend
+
+      # Одна строка вместо переписанного своими словами списка шагов, и это
+      # не про краткость. Пока конвейер перечислял ruff, mypy, pytest, tsc и
+      # прочее поимённо, он был вторым списком тех же проверок — а два списка
+      # одного и того же расходятся всегда. Так и вышло: `npm run lint` в
+      # Makefile появился, в конвейере нет, и коммит с ошибкой линтера
+      # проезжал CI, если автор забыл прогнать `make check` у себя.
+      # Проверено: файл с условным useState даёт красный oxlint, но tsc,
+      # vitest и build возвращают ноль.
+      #
+      # Теперь состав проверок живёт в Makefile в единственном экземпляре, и
+      # добавленная туда проверка попадает в CI сама. Сквозные тесты ниже —
+      # единственное, чего в `make check` нет: им нужны отдельная база и
+      # браузер.
+      - run: make check
 
       - run: npx playwright install --with-deps chromium
         working-directory: frontend

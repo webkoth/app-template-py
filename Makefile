@@ -52,10 +52,15 @@ check-frontend: check-openapi
 
 # Расхождение контракта ловится здесь: бэкенд поменял схему, фронт не
 # перегенерировал типы — красный прогон на ветке, а не сюрприз в бою.
+#
+# diff -u, а не -q: на совпадении оба молчат, а на расхождении -q печатает
+# только «файлы различаются». В логе прогона это тупик — что именно уехало,
+# видно лишь на своей машине, а смотрит туда как раз тот, у кого расхождение
+# воспроизвелось только в CI.
 check-openapi:
 	cd backend && uv run python -m app.openapi > /tmp/openapi.json
 	cd frontend && npx openapi-typescript /tmp/openapi.json -o src/api/schema.d.ts.new
-	@diff -q frontend/src/api/schema.d.ts frontend/src/api/schema.d.ts.new > /dev/null \
+	@diff -u frontend/src/api/schema.d.ts frontend/src/api/schema.d.ts.new \
 		|| { rm -f frontend/src/api/schema.d.ts.new; \
 		     echo "Типы клиента разошлись со схемой. Выполни: make openapi"; \
 		     exit 1; }

@@ -53,42 +53,25 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: uv sync --frozen --group lint
         working-directory: backend
-      - run: uv run ruff format --check .
-        working-directory: backend
-      - run: uv run ruff check .
-        working-directory: backend
-      - run: uv run mypy app
-        working-directory: backend
-      - run: uv run --group lint lint-imports --config .importlinter
-        working-directory: backend
-      - run: uv run alembic upgrade head
-        working-directory: backend
-      - run: uv run pytest
-        working-directory: backend
+
+      # npm ci обязателен ДО `make check`: половину фронтенда тот проверяет
+      # только при существующем frontend/node_modules, а без него громко
+      # отказывается работать.
       - run: npm ci
         working-directory: frontend
-      # tsc -b --force, а не tsc --noEmit: корневой tsconfig.json — это
-      # `files: []` плюс references, и в не-build режиме tsc в references не
-      # заходит, то есть --noEmit не проверял бы во фронтенде ничего.
-      # Подробности — в Makefile и в ci.yml.
-      - run: npx tsc -b --force
-        working-directory: frontend
-      - run: npm run test
-        working-directory: frontend
 
-      # Тот же шаг, что в ci.yml, и он здесь не лишний: прямой push в main
-      # минуя pull request проверок ветки не проходит вовсе — и уехал бы на
-      # контур с типами клиента, разошедшимися со схемой. Экран показывал бы
-      # поля, которых сервер больше не отдаёт, и виноватым выглядел бы
-      # фронтенд.
-      - name: Типы клиента совпадают со схемой
-        run: |
-          cd backend && uv run python -m app.openapi > /tmp/openapi.json
-          cd ../frontend && npx openapi-typescript /tmp/openapi.json -o /tmp/schema.d.ts
-          diff -u src/api/schema.d.ts /tmp/schema.d.ts || {
-            echo "::error::Типы клиента разошлись со схемой. Выполни: make openapi"
-            exit 1
-          }
+      # Миграции накатываются на рабочую базу — так проверяется, что они
+      # ложатся на пустую. `make check` этого не делает намеренно: API-тесты
+      # создают схему из метаданных и в ОТДЕЛЬНОЙ базе.
+      - run: uv run alembic upgrade head
+        working-directory: backend
+
+      # Тот же единственный шаг, что и в ci.yml, и он здесь не лишний:
+      # прямой push в main минуя pull request проверок ветки не проходит
+      # вовсе. Состав проверок не переписан своими словами — иначе получилось
+      # бы уже ТРИ списка одного и того же (Makefile, ci.yml, deploy.yml), и
+      # разошлись бы они тем вернее. Подробности — в ci.yml.
+      - run: make check
 
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
