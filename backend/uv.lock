@@ -51,7 +51,7 @@ wheels = [
 ]
 
 [[package]]
-name = "apptemplate"
+name = "apptemplatepy"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [

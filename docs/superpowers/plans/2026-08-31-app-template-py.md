@@ -94,7 +94,7 @@ echo "3.14" > backend/.python-version
 
 ```toml
 [project]
-name = "apptemplate"
+name = "apptemplatepy"
 version = "0.0.1"
 description = "Стартовый шаблон внутреннего приложения на FastAPI"
 requires-python = ">=3.14"
@@ -1966,14 +1966,16 @@ cd backend && uv run alembic init -t async alembic
 # коммитится, а строка подключения содержит пароль роли базы.
 sqlalchemy.url =
 ```
-
-- [ ] **Шаг 3: Переписать `backend/alembic/env.py`**
-
-```python
 """Окружение Alembic.
 
-Обвязка запускается до того, как приложение существует, и читает настройки
-сама — так же, как это описано для скриптов в правилах проекта.
+Настройки берутся из `app.core.config` — того же места, откуда их берёт
+приложение. Своего чтения окружения здесь нет намеренно: два разбора одного
+`.env` разъезжаются молча, и миграция уходит в базу, отличную от той, с
+которой работает приложение.
+
+Единственная обвязка проекта, читающая окружение сама, — конфигурация
+Playwright: она поднимает сервер как чужой процесс и до `app.core.config`
+дотянуться не может.
 """
 
 import asyncio
@@ -1995,8 +1997,8 @@ from app.core.db import Base
 # случайным импортом из трёх, а объяснять он должен все три.
 # isort: split
 from app.core.audit import AuditLog  # noqa: F401
-from app.features.expenses.models import Expense  # noqa: F401
 from app.core.users import User  # noqa: F401
+from app.features.expenses.models import Expense  # noqa: F401
 
 config = context.config
 # %% вместо %: set_main_option кладёт значение в ConfigParser, а тот считает
@@ -5406,16 +5408,6 @@ async def test_unknown_document_rejected(client, login_as, name):
     response = await client.get(f"/api/meta/docs/{name}")
     assert response.status_code in (404, 400)
 ```
-
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
-
-Run: `cd backend && uv run pytest tests/api/test_meta.py`
-Expected: FAIL — маршрутов `/api/health` и `/api/meta/*` ещё нет: все
-двадцать шесть проверок падают.
-
-- [ ] **Шаг 3: Написать `backend/app/features/meta/router.py`**
-
-```python
 """Служебные маршруты: живость, версия сборки, тексты правил для /docs."""
 
 import json
@@ -5488,7 +5480,12 @@ class Document(BaseModel):
 
 @router.get("/health", response_model=Health)
 async def health(session: SessionDep) -> Health:
-    """Единственный маршрут без авторизации.
+    """Проверка живости. Авторизации не требует.
+
+    Без авторизации живут ровно три маршрута, и каждый по устройству: этот —
+    потому что его зовёт доставка и монитор, у которых сессии нет; вход —
+    потому что сессию он и выдаёт; выход — потому что гасить куку человеку
+    надо и тогда, когда она уже недействительна.
 
     Ходит в базу намеренно: проверка, которая отвечает 200 при недоступной
     базе, подтверждает только то, что процесс жив, — а доставка на основании
