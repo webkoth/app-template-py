@@ -33,6 +33,33 @@ def test_reading_an_unknown_identifier_is_not_found(_dir):
         storage.read(uuid.uuid7())
 
 
+@pytest.mark.parametrize(
+    ("limit", "expected"),
+    [
+        (32 * 1024 * 1024, "32 МиБ"),
+        (1024 * 1024, "1 МиБ"),
+        # Предел меньше мегабайта — не выдумка: на контуре его задают под
+        # client_max_body_size в nginx, где умолчание ровно 1 МиБ. Целое
+        # деление на мегабайты давало здесь «0 МиБ» — предел, который
+        # невозможно соблюсти.
+        (1_000_000, "977 КиБ"),
+        (1_500_000, "1.4 МиБ"),
+    ],
+)
+def test_the_limit_is_named_in_units_a_human_reads(_dir, limit, expected):
+    assert storage.human_size(limit) == expected
+
+
+def test_a_sub_megabyte_limit_does_not_refuse_by_zero(_dir, monkeypatch):
+    # Отказ «Файл больше предельного (0 МиБ)» человек читает как поломку:
+    # ноль соблюсти нельзя. Проверяется целиком текст, а не функция.
+    monkeypatch.setattr(storage.settings, "upload_max_bytes", 1_000_000)
+    with pytest.raises(RuleViolation) as denial:
+        storage.check_size(declared=2_000_000)
+    assert "0 МиБ" not in denial.value.message
+    assert "977 КиБ" in denial.value.message
+
+
 def test_too_large_is_refused_by_the_declared_size(_dir, monkeypatch):
     # Отказ до чтения целиком: смысл потолка в том, чтобы не держать в
     # памяти то, что и не собирались принимать.

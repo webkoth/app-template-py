@@ -54,6 +54,23 @@ def path_for(file_id: uuid.UUID) -> Path:
     return _dir() / str(file_id)
 
 
+def human_size(size_bytes: int) -> str:
+    """Размер словами, которые человек прочитает.
+
+    Целочисленное деление на мегабайты врало на любом пределе меньше
+    мегабайта: `UPLOAD_MAX_BYTES=1000000` давало отказ «Файл больше
+    предельного (0 МиБ)» — то есть предел, который невозможно соблюсти.
+    А предел меньше мегабайта — не выдумка: на контуре его задают под
+    `client_max_body_size` в nginx, и там умолчание ровно 1 МиБ.
+    """
+    if size_bytes >= 1024 * 1024:
+        mib = size_bytes / 1024 / 1024
+        # Дробная часть только когда она есть: «32 МиБ» читается лучше, чем
+        # «32.0 МиБ», а «1.5 МиБ» лучше, чем «1 МиБ» о полутора.
+        return f"{mib:.0f} МиБ" if mib == int(mib) else f"{mib:.1f} МиБ"
+    return f"{size_bytes / 1024:.0f} КиБ"
+
+
 def _refuse_if_over_limit(size: int) -> None:
     """Общий отказ по объёму для обеих проверок ниже.
 
@@ -63,9 +80,8 @@ def _refuse_if_over_limit(size: int) -> None:
     закрывает свой обход потолка.
     """
     if size > settings.upload_max_bytes:
-        limit_mib = settings.upload_max_bytes // 1024 // 1024
         raise RuleViolation(
-            f"Файл больше предельного ({limit_mib} МиБ)",
+            f"Файл больше предельного ({human_size(settings.upload_max_bytes)})",
             field="file",
         )
 
