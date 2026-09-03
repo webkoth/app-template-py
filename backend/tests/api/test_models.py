@@ -217,6 +217,30 @@ async def test_trained_model_is_stored_with_its_metric(client, session, login_as
     assert result["метрика"] == pytest.approx(model.metric_value)
 
 
+async def test_training_twice_does_not_double_the_models(client, session, login_as):
+    # Задачу может быть выполнена повторно: воркер перезапущен доставкой
+    # между `session.commit()` в обработчике и `jobs.complete` в воркере.
+    # Обработчик обязан быть идемпотентным — ровно как разбор. Без этого
+    # после двух проходов ОДНОЙ задачи получаются две модели, обе видны на
+    # экране, и человек выбирает из них, чем предсказывать.
+    from app.features.datasets import jobs as handlers
+
+    await login_as(role=Role.editor, login="ivan")
+    dataset = await prepare(client, session)
+    await client.post(
+        f"/api/datasets/{dataset.id}/models", json={"target_column": "цена"}
+    )
+    job = await train_job(session)
+
+    await handlers.train(session, job)
+    await handlers.train(session, job)
+    await session.commit()
+
+    models = (await session.execute(select(ModelArtifact))).scalars().all()
+    assert len(models) == 1, "второй проход дал вторую модель"
+    assert models[0].job_id == job.id
+
+
 async def test_prediction_uses_the_stored_model(client, session, login_as):
     from app.features.datasets import jobs as handlers
 

@@ -252,9 +252,24 @@ async def train(session: AsyncSession, job: Job) -> dict[str, Any]:
 
     buffer = io.BytesIO()
     joblib.dump(model, buffer)
+
+    # Идемпотентность, как и в разборе. Задачу может вернуть протухшая
+    # отметка живости, а воркер, перезапущенный доставкой между `commit`
+    # ниже и `jobs.complete`, сказать об этом не успевает — и второй проход
+    # без удаления кладёт ВТОРУЮ модель на ту же работу. Молча: обе видны
+    # на экране, и человек выбирает из них, чем предсказывать.
+    #
+    # Удаление и вставка здесь действительно идут одной транзакцией:
+    # отметки живости между ними нет, а `heartbeat` — единственное, что
+    # коммитит по ходу обработчика.
+    await session.execute(delete(ModelArtifact).where(ModelArtifact.job_id == job.id))
     session.add(
         ModelArtifact(
             dataset_id=dataset_id,
+            # Модель привязана к своей задаче: без этого «прежний артефакт
+            # этой же работы» просто нечем назвать, а уникальность,
+            # которую держит база, — нечем выразить.
+            job_id=job.id,
             target_column=target,
             feature_columns=features,
             algorithm="LinearRegression",

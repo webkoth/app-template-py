@@ -99,10 +99,31 @@ class ModelArtifact(Base):
     """
 
     __tablename__ = "model_artifacts"
+    # Одна задача — одна модель, и держит это база. Причина та же, что у
+    # уникальности строк таблицы: обучение идёт в фоне, задачу возвращает
+    # протухшая отметка живости или перезапуск воркера доставкой между
+    # `commit` обработчика и `jobs.complete` — и второй проход без этого
+    # кладёт ВТОРУЮ модель. Молча: обе видны на экране моделей, обе
+    # выглядят настоящими, и человек выбирает из них, чем предсказывать.
+    #
+    # Идемпотентность обработчика (удалить прежний артефакт этой задачи,
+    # потом вставить) это не отменяет: она делает повтор тихим, а
+    # уникальность — обязательным. Разъедутся — второй проход упадёт
+    # громко, а не удвоит модели.
+    __table_args__ = (Index("ix_model_artifacts_job_id", "job_id", unique=True),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
     dataset_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("datasets.id", ondelete="CASCADE")
+    )
+    # Задача, которая обучила модель. Nullable по двум причинам сразу:
+    # артефакты, обученные до появления колонки, своей задачи не знают, а
+    # `ondelete=SET NULL` оставляет модель жить, когда старую задачу
+    # убирают из очереди — терять обученное вместе с записью о работе
+    # нельзя. Уникальному индексу это не мешает: в PostgreSQL NULL не
+    # конфликтует с NULL.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
     )
     target_column: Mapped[str] = mapped_column(String(255))
     feature_columns: Mapped[list[str]] = mapped_column(JSONB)
