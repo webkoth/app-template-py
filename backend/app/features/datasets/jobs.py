@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import jobs, storage
 from app.core.jobs import Job
-from app.domain.tables import read_table, summarise
+from app.domain.tables import NUMERIC, read_table, summarise
 from app.features.datasets.models import Dataset, DatasetRow, ModelArtifact
 
 # Вид задачи объявлен ЗДЕСЬ, рядом с обработчиком, и импортируется всеми
@@ -44,7 +44,11 @@ MIN_ROWS_TO_TRAIN = 20
 # из `app/domain/tables.py`, и здесь оно написано второй раз — контракт
 # между разбором и обучением держится на нём. Разъедутся — обучение начнёт
 # отказывать по всем колонкам сразу, и это видно первым же прогоном.
-NUMERIC_KIND = "число"
+# Вид колонки берётся из домена, а не пишется здесь второй раз: сводку
+# собирает `summarise`, и два независимых написания одного слова разъезжаются
+# молча — обучение перестало бы находить числовые колонки в таблице, полной
+# чисел.
+NUMERIC_KIND = NUMERIC
 
 # Четверть строк не участвует в обучении и идёт на проверку. Метрика,
 # посчитанная на тех же строках, на которых учили, хвалит модель за
@@ -208,6 +212,27 @@ async def train(session: AsyncSession, job: Job) -> dict[str, Any]:
         )
 
     frame = pd.DataFrame([row.data for row in rows])
+
+    # Пустые ячейки. В настоящей выгрузке они есть почти всегда, а из JSONB
+    # приезжают как NaN, и `fit` падает английским «Input X contains NaN» —
+    # человек читает это в карточке задачи и идёт искать поломку в системе.
+    #
+    # Строки с пропусками отбрасываются, и это НЕ делается молча: сколько
+    # выброшено, уезжает в результат задачи и видно на экране. Молчаливое
+    # отбрасывание здесь хуже отказа — модель, обученная на половине
+    # таблицы, выглядит обученной на всей, а метрика ничего об этом не
+    # говорит. Считаем по тем колонкам, которые участвуют: пропуск в
+    # колонке, которую не берём, к обучению отношения не имеет.
+    used = [*features, target]
+    complete = frame[used].dropna()
+    dropped = len(frame) - len(complete)
+    if len(complete) < MIN_ROWS_TO_TRAIN:
+        raise ValueError(
+            f"После пропусков осталось {len(complete)} строк из {len(frame)}, "
+            f"а для обучения нужно хотя бы {MIN_ROWS_TO_TRAIN}"
+        )
+    frame = complete
+
     await jobs.heartbeat(session, job, progress=_SPLIT_DONE)
 
     # to_numpy, а не сам DataFrame: модель, обученная на именованных
@@ -240,7 +265,12 @@ async def train(session: AsyncSession, job: Job) -> dict[str, Any]:
         )
     )
     await session.commit()
-    return {"метрика": metric, "колонок": len(features)}
+    return {
+        "метрика": metric,
+        "колонок": len(features),
+        "строк": len(frame),
+        "пропущено": dropped,
+    }
 
 
 HANDLERS = {PARSE: parse, TRAIN: train}

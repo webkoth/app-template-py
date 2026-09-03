@@ -103,18 +103,28 @@ def _clean(value: Any) -> Any:
     return value
 
 
+# Виды колонок. Строки объявлены здесь, потому что читает их не только
+# сводка: обучение отбирает признаки сравнением с NUMERIC. Написанные в двух
+# местах, они разъезжаются молча — переименуй вид здесь, и обучение перестанет
+# находить числовые колонки вовсе, сообщив «нет колонок, по которым можно
+# обучать» о таблице, полной чисел.
+NUMERIC = "число"
+TEXT = "текст"
+EMPTY = "пусто"
+
+
 def summarise(frame: pd.DataFrame) -> dict[str, Any]:
     """Сводка: сколько строк и что в колонках."""
     columns: list[dict[str, Any]] = []
     for name in frame.columns:
         column = frame[name]
         if column.dropna().empty:
-            columns.append({"имя": str(name), "вид": "пусто"})
+            columns.append({"имя": str(name), "вид": EMPTY})
         elif pd.api.types.is_numeric_dtype(column):
             columns.append(
                 {
                     "имя": str(name),
-                    "вид": "число",
+                    "вид": NUMERIC,
                     "минимум": _clean(column.min()),
                     "максимум": _clean(column.max()),
                     "среднее": _clean(column.mean()),
@@ -124,7 +134,7 @@ def summarise(frame: pd.DataFrame) -> dict[str, Any]:
             columns.append(
                 {
                     "имя": str(name),
-                    "вид": "текст",
+                    "вид": TEXT,
                     "различных": int(column.nunique()),
                 }
             )

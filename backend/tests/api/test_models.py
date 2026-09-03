@@ -29,6 +29,23 @@ TEXT_TABLE = (
     "город,цена\n" + "".join(f"{'АБВ'[i % 3]},{100 + i * 3}\n" for i in range(40))
 ).encode()
 
+# Та же таблица, но в пяти строках нет площади. Пустые ячейки в настоящей
+# выгрузке есть почти всегда.
+GAPPY_TABLE = (
+    "площадь,комнат,цена\n"
+    + "".join(
+        f"{'' if i % 8 == 0 else 40 + i},{1 + i % 3},{100 + i * 3}\n" for i in range(40)
+    )
+).encode()
+
+# Пропусков столько, что учить не на чем.
+MOSTLY_GAPS_TABLE = (
+    "площадь,комнат,цена\n"
+    + "".join(
+        f"{'' if i % 4 else 40 + i},{1 + i % 3},{100 + i * 3}\n" for i in range(40)
+    )
+).encode()
+
 # Меньше, чем MIN_ROWS_TO_TRAIN.
 SHORT_TABLE = (
     "площадь,цена\n" + "".join(f"{40 + i},{100 + i * 3}\n" for i in range(5))
@@ -74,6 +91,58 @@ async def train_job(session) -> Job:
     return (
         await session.execute(select(Job).where(Job.kind == "datasets.train"))
     ).scalar_one()
+
+
+async def test_gaps_are_dropped_and_counted_not_swallowed(client, session, login_as):
+    """Пустая ячейка не должна ронять обучение английским сообщением.
+
+    Из JSONB пропуск приезжает как NaN, и `fit` падает «Input X contains
+    NaN» — человек читает это в карточке задачи и идёт искать поломку в
+    системе, хотя дело в его таблице.
+
+    Строки с пропусками отбрасываются, но НЕ молча: сколько выброшено,
+    уезжает в результат задачи. Молчание здесь хуже отказа — модель,
+    обученная на половине таблицы, выглядит обученной на всей.
+    """
+    from app.features.datasets import jobs as handlers
+
+    await login_as(role=Role.editor, login="ivan")
+    dataset = await prepare(client, session, GAPPY_TABLE)
+    await client.post(
+        f"/api/datasets/{dataset.id}/models", json={"target_column": "цена"}
+    )
+    job = (
+        await session.execute(select(Job).where(Job.kind == "datasets.train"))
+    ).scalar_one()
+
+    result = await handlers.train(session, job)
+    await session.commit()
+
+    assert result["пропущено"] == 5
+    assert result["строк"] == 35
+    assert (await session.execute(select(ModelArtifact))).scalar_one() is not None
+
+
+async def test_a_table_of_mostly_gaps_is_refused_by_what_is_left(
+    client, session, login_as
+):
+    # Отказ называет ОБА числа: сколько осталось и сколько было. «Нужно 20
+    # строк, есть 10» о таблице на сорок строк человек читает как ошибку
+    # системы — он же видит сорок.
+    from app.features.datasets import jobs as handlers
+
+    await login_as(role=Role.editor, login="ivan")
+    dataset = await prepare(client, session, MOSTLY_GAPS_TABLE)
+    await client.post(
+        f"/api/datasets/{dataset.id}/models", json={"target_column": "цена"}
+    )
+    job = (
+        await session.execute(select(Job).where(Job.kind == "datasets.train"))
+    ).scalar_one()
+
+    with pytest.raises(ValueError) as denial:
+        await handlers.train(session, job)
+    assert "10 строк из 40" in str(denial.value)
 
 
 async def test_training_requires_editor(client, session, login_as):
