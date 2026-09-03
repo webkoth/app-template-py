@@ -8,7 +8,7 @@
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Корень репозитория: app/core/config.py → core, app, backend, корень.
@@ -42,6 +42,11 @@ class Settings(BaseSettings):
         # питоновскому имени — этим пользуются тесты.
         alias_generator=str.upper,
         populate_by_name=True,
+        # inf > 0 истинно, поэтому без этого JOB_STALE_AFTER_SECONDS="1e999"
+        # (опечатка в показателе) проходит валидацию — и брошенная задача не
+        # возвращается в очередь никогда. Выглядит это как зависший воркер, а
+        # не как ошибка в .env, и искать будут в воркере.
+        allow_inf_nan=False,
     )
 
     database_url: str = Field(description="Адрес PostgreSQL")
@@ -61,6 +66,69 @@ class Settings(BaseSettings):
     app_bootstrap_password: str = "admin"
     app_bootstrap_name: str = "Администратор"
 
+    # --- слой данных ---------------------------------------------------
+    # Каталог загрузок. Абсолютный и от файла настроек по той же причине,
+    # что и ENV_FILE выше: приложение запускают из backend/, а команды make
+    # — из корня, и относительный путь дал бы разные каталоги.
+    upload_dir: Path = ENV_FILE.parent / "uploads"
+    # 32 МиБ. Не про диск — про память: разбор таблицы держит её целиком.
+    upload_max_bytes: int = Field(default=32 * 1024 * 1024, gt=0)
+    # Опрос очереди. Секунда на фоне долгого счёта незаметна, а LISTEN/NOTIFY
+    # — вторая механика ожидания, которую пришлось бы отлаживать отдельно.
+    job_poll_seconds: float = Field(default=1.0, gt=0)
+    # Отметка живости и срок, после которого задача считается брошенной.
+    job_heartbeat_seconds: float = Field(default=10.0, gt=0)
+    job_stale_after_seconds: float = Field(default=60.0, gt=0)
+    # Три попытки: разрыв связи с базой и перезапуск на доставке проходят
+    # сами, а ошибка в данных от повторов не исчезнет. Потолок сверху — про
+    # опечатку: JOB_MAX_ATTEMPTS=1000 занимает воркер задачей, которая уже
+    # не выполнится, до конца недели.
+    job_max_attempts: int = Field(default=3, ge=1, le=10)
+    # Режим клиента внешних моделей. mock по умолчанию: шаблон обязан
+    # работать сразу, без ключей и без сети.
+    integrations_mode: Literal["live", "mock", "fixture"] = "mock"
+    # Адрес поставщика и ключ к нему. Пустые умолчания намеренно: в режиме
+    # mock они не нужны, а обязательное поле заставило бы заполнять их всех,
+    # включая тех, кому внешние модели не нужны вовсе. Пустоту при
+    # INTEGRATIONS_MODE=live ловит сам клиент — отказом, а не откатом к mock.
+    integrations_url: str = ""
+    integrations_api_key: str = ""
+    # Сколько ждать ответа. Настройкой, а не числом в коде: у поставщиков
+    # разный нрав, и подбирать его придётся на контуре, а не в репозитории.
+    #
+    # Ожидание касается не только того, кто ждёт. Фоновая задача, стоящая на
+    # запросе дольше JOB_STALE_AFTER_SECONDS, считается брошенной, и её
+    # берёт второй воркер — запрос уходит поставщику дважды и дважды
+    # оплачивается, а первый ответ затирается вторым. Поэтому держи это
+    # значение меньше JOB_STALE_AFTER_SECONDS, если внешнюю модель зовут из
+    # фоновой задачи. Проверкой это не выражено: клиента зовут и из
+    # обработчика запроса, где очереди нет вовсе, и общий запрет мешал бы
+    # тем, кого он не касается.
+    integrations_timeout_seconds: float = Field(default=30.0, gt=0)
+
+    @field_validator("upload_dir")
+    @classmethod
+    def _upload_dir_is_absolute(cls, value: Path) -> Path:
+        """Относительный UPLOAD_DIR — три разных каталога вместо одного.
+
+        Ловушка была описана в .env.example и не закрыта ничем: `UPLOAD_DIR=""`
+        даёт `Path(".")`, а `uploads` — путь от рабочего каталога процесса.
+        Каталогов же три: pm2 запускает приложение с `--cwd .../backend`,
+        воркер идёт оттуда же, а команды make — из корня. Файл, загруженный
+        минуту назад, оказывается «не найден», и причина не видна ниоткуда.
+
+        Комментарий в образце это не остановит: человек правит свой .env, а
+        не образец. Поэтому отказ, и на старте, а не при первой загрузке.
+        """
+        expanded = value.expanduser()
+        if not expanded.is_absolute():
+            raise ValueError(
+                "UPLOAD_DIR должен быть абсолютным путём: относительный "
+                "считается от рабочего каталога, а у приложения, воркера и "
+                "команд make он разный"
+            )
+        return expanded
+
     @model_validator(mode="after")
     def _check(self) -> Self:
         if not self.database_url.startswith(("postgresql://", "postgres://")):
@@ -69,6 +137,22 @@ class Settings(BaseSettings):
             raise ValueError(
                 "на боевом контуре кука сессии обязана быть Secure "
                 "(COOKIE_SECURE=true): контур под HTTPS"
+            )
+        if self.job_stale_after_seconds < 3 * self.job_heartbeat_seconds:
+            # Отбор задачи раньше, чем воркер успевает поставить отметку, —
+            # это отбор у живого: два воркера считают одно и то же, и второй
+            # затирает результат первого.
+            #
+            # Кратность, а не просто «больше». Проверка «строго больше»
+            # пропускала HEARTBEAT=10, STALE=10.001 — то есть ровно ту
+            # настройку, от которой поставлена: пропущенная на сборке мусора
+            # или на медленной записи отметка отбирает задачу у живого. Запас
+            # должен переживать несколько пропусков подряд; в умолчаниях он
+            # шестикратный, минимум здесь — трёхкратный.
+            raise ValueError(
+                "JOB_STALE_AFTER_SECONDS должен быть втрое больше "
+                "JOB_HEARTBEAT_SECONDS: иначе задача отбирается у живого "
+                "воркера, пропустившего одну отметку"
             )
         return self
 

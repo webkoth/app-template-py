@@ -47,6 +47,14 @@ pandas, scikit-learn, joblib, httpx; React 19 + TanStack Router/Query на
 каждым коммитом; каждый охранник доказывается мутацией; комментарий пишется
 про то, почему так и что было бы иначе.
 
+**Ловушка, встреченная на задаче 1.** У `Settings` стоит `extra="forbid"`,
+поэтому `pytest.raises(ValidationError)` на ещё не заведённое поле зелен и
+БЕЗ кода: pydantic отвергает неизвестный ключ, и проверка засчитывает это
+как отказ по своему правилу. Красной фазы у такого теста нет, а выглядит он
+пройденным. Сверяй текст отказа, а не факт: `assert "…" in str(denial.value)`.
+Шире: любой тест, который на шаге 2 падает не по названной в плане причине,
+надо не радоваться, а чинить.
+
 ## Раскладка файлов
 
 ```
@@ -90,12 +98,19 @@ frontend/src/routes/
 
 ### Задача 1: Настройки слоя
 
+> **Сделано** (`d5a0047`, `9b66682`, `832c373`). Итоговый код строже блоков
+> ниже: у `upload_dir` появился валидатор, требующий абсолютного пути (без
+> него `UPLOAD_DIR=""` проходил молча), запас живости требует ТРЁХКРАТНОГО
+> превышения, а не просто большего, в `model_config` добавлен
+> `allow_inf_nan=False`, у `job_max_attempts` — `le=10`. Причины — в
+> сообщении коммита `832c373`.
+
 **Files:**
 - Modify: `backend/app/core/config.py`
 - Modify: `.env.example`
 - Test: `backend/tests/unit/test_config.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Дописать в `backend/tests/unit/test_config.py`:
 
@@ -143,12 +158,12 @@ def test_unknown_integrations_mode_is_refused():
         Settings(_env_file=None, **BASE, INTEGRATIONS_MODE="почти-настоящий")
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_config.py`
 Expected: FAIL — у `Settings` нет полей `upload_max_bytes` и прочих.
 
-- [ ] **Шаг 3: Дописать поля в `backend/app/core/config.py`**
+- [x] **Шаг 3: Дописать поля в `backend/app/core/config.py`**
 
 В класс `Settings`, после `app_bootstrap_name`:
 
@@ -192,13 +207,17 @@ Expected: FAIL — у `Settings` нет полей `upload_max_bytes` и про�
             )
 ```
 
-- [ ] **Шаг 4: Дописать `.env.example`**
+- [x] **Шаг 4: Дописать `.env.example`**
 
 ```bash
 # --- слой данных ---
-# Каталог загрузок. Пусто — рядом с репозиторием (uploads/, в .gitignore).
-# На контуре провижинер каталога не заводит: его создаёт приложение.
-UPLOAD_DIR=""
+# Каталог загрузок. Строка ЗАКОММЕНТИРОВАНА намеренно: умолчание — uploads/
+# рядом с репозиторием (он в .gitignore), а пустое UPLOAD_DIR="" было бы
+# ловушкой — extra="forbid" его примет, Path("") даст текущий каталог, и
+# файлы разъедутся по трём местам, потому что приложение запускают из
+# backend/, а команды make — из корня. На контуре строку раскомментировать.
+# Каталога провижинер не заводит: его создаёт приложение при первой загрузке.
+# UPLOAD_DIR="/var/www/<слаг>/uploads"
 UPLOAD_MAX_BYTES="33554432"
 
 # Очередь фоновых задач. STALE обязан быть больше HEARTBEAT.
@@ -211,26 +230,18 @@ JOB_MAX_ATTEMPTS="3"
 INTEGRATIONS_MODE="mock"
 ```
 
-Пустое `UPLOAD_DIR` в `.env.example` — ловушка: `extra="forbid"` его примет,
-а `Path("")` даст текущий каталог. Поэтому поле объявлено с умолчанием, а в
-`.env.example` строка закомментирована:
-
-```bash
-# UPLOAD_DIR="/var/www/<слаг>/uploads"
-```
-
-- [ ] **Шаг 5: Дописать `uploads/` в `.gitignore`**
+- [x] **Шаг 5: Дописать `uploads/` в `.gitignore`**
 
 ```gitignore
 uploads/
 ```
 
-- [ ] **Шаг 6: Запустить тесты**
+- [x] **Шаг 6: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/unit/test_config.py -v`
 Expected: PASS
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add backend/app/core/config.py backend/tests/unit/test_config.py \
@@ -242,11 +253,23 @@ git commit -m "feat: настройки слоя данных"
 
 ### Задача 2: Хранилище файлов
 
+> **Сделано** (`4dfa69c`, `832c373`). Код в блоках ниже содержал две дыры,
+> найденные при исполнении, и одно противоречие с задачей 6:
+>
+> 1. `detect_kind(data[:8])` — первые восемь байт PDF это `%PDF-1.7`, чистый
+>    ASCII: тело PDF проходило `save` как CSV. Смотрим 4096 байт.
+> 2. Правило «голова обязана декодироваться как utf-8» отвергало CSV в
+>    cp1251 — то, чем Excel выгружает по умолчанию. А `read_table` из задачи
+>    6 cp1251 читает намеренно: загрузка отказывала бы в файле, который
+>    разбор умеет разбирать. **Кодировка — забота разбора, а не загрузки.**
+>    Загрузка отделяет таблицу от двоичного: известная сигнатура
+>    (`%PDF`, PNG, JPEG, GIF, ELF, gzip, OLE) или нулевой байт в голове.
+
 **Files:**
 - Create: `backend/app/core/storage.py`
 - Test: `backend/tests/unit/test_storage.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_storage.py`:
 
@@ -324,12 +347,12 @@ def test_delete_is_silent_when_the_file_is_already_gone(_dir):
     storage.delete(uuid.uuid7())
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_storage.py`
 Expected: FAIL — модуля `app.core.storage` нет.
 
-- [ ] **Шаг 3: Написать `backend/app/core/storage.py`**
+- [x] **Шаг 3: Написать `backend/app/core/storage.py`**
 
 ```python
 """Файлы на диске контура.
@@ -424,23 +447,23 @@ def delete(file_id: uuid.UUID) -> None:
     path_for(file_id).unlink(missing_ok=True)
 ```
 
-- [ ] **Шаг 4: Запустить тесты**
+- [x] **Шаг 4: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/unit/test_storage.py -v`
 Expected: PASS, 8 passed
 
-- [ ] **Шаг 5: Доказать охранников мутацией**
+- [x] **Шаг 5: Доказать охранников мутацией**
 
 Перед каждым прогоном: `find backend -name __pycache__ -type d -exec rm -rf {} +`
 
 | Мутация | Обязана упасть |
 |---|---|
-| `path_for` возвращает `_dir() / original_name` | `test_stored_name_is_an_identifier_not_the_original` |
+| в `save` писать в `_dir() / "upload.bin"` вместо `path_for(file_id)` | `test_stored_name_is_an_identifier_not_the_original` |
 | убрать проверку размера в `save` | `test_too_large_is_refused_even_when_size_is_not_declared` |
 | `detect_kind` всегда возвращает `"csv"` | `test_unknown_content_is_refused` |
 | `delete` без `missing_ok=True` | `test_delete_is_silent_when_the_file_is_already_gone` |
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/core/storage.py backend/tests/unit/test_storage.py
@@ -456,7 +479,7 @@ git commit -m "feat: хранилище файлов на диске конту�
 - Modify: `backend/tests/conftest.py` — импорт модели ради метаданных
 - Test: `backend/tests/api/test_jobs.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_jobs.py`:
 
@@ -493,10 +516,17 @@ async def test_enqueued_job_waits_in_the_queue(session):
 
 
 async def test_two_workers_never_take_the_same_job(new_session):
-    # Смысл SKIP LOCKED. Без него оба воркера берут одну задачу: один
-    # считает впустую, а результат второго затирается первым. Гарантирует
-    # это база, а не наша аккуратность, — и проверяется поэтому настоящей
-    # одновременностью, на отдельных соединениях.
+    # Одну задачу берёт ровно один воркер. Гарантирует это БЛОКИРОВКА
+    # СТРОКИ — `with_for_update`, — а не наша аккуратность, и проверяется
+    # поэтому настоящей одновременностью, на отдельных соединениях.
+    #
+    # Проверено на живой базе, что бывает без неё: две транзакции читают
+    # одну и ту же строку, обе объявляют её своей, а следующая задача так и
+    # остаётся ждать. То есть один воркер считает впустую, второй затирает
+    # его результат, и очередь при этом кажется движущейся.
+    #
+    # `skip_locked` к этому отношения не имеет — ему посвящён следующий
+    # тест, и охраняет он другое.
     async with new_session() as setup:
         jobs.enqueue(setup, kind="проба", payload={}, actor="boss")
         await setup.commit()
@@ -514,6 +544,47 @@ async def test_two_workers_never_take_the_same_job(new_session):
         for row in (await cleanup.execute(select(Job))).scalars().all():
             await cleanup.delete(row)
         await cleanup.commit()
+
+
+async def test_a_locked_row_does_not_hide_the_next_job(new_session):
+    # А это смысл SKIP LOCKED, и он ДРУГОЙ, чем кажется. Взятие одной
+    # задачи двумя воркерами запрещает блокировка и без него: второй просто
+    # ждёт, пока первый отпустит строку, и уходит ни с чем. Разница в том,
+    # чего это стоит, и она измерена на живой базе: 0,03 с против 1,15 с,
+    # проведённых в ожидании чужого коммита. Всё это время воркер не берёт
+    # СЛЕДУЮЩУЮ задачу, хотя она свободна.
+    #
+    # Поэтому проверка такая: первая строка заперта незакрытой транзакцией,
+    # в очереди есть вторая задача, и claim обязан вернуть именно её. Без
+    # skip_locked=True он повиснет на запертой строке — не «отработает
+    # медленнее», а не вернётся вовсе, пока держат замок. Отсюда wait_for:
+    # без него красный тест выглядел бы как зависший прогон.
+    async with new_session() as setup:
+        jobs.enqueue(setup, kind="первая", payload={}, actor="boss")
+        await setup.commit()
+        jobs.enqueue(setup, kind="вторая", payload={}, actor="boss")
+        await setup.commit()
+
+    try:
+        async with new_session() as holder:
+            held = (
+                await holder.execute(
+                    select(Job).order_by(Job.created_at).limit(1).with_for_update()
+                )
+            ).scalar_one()
+            assert held.kind == "первая"
+            # Транзакция holder НЕ закрыта: строка заперта до конца блока.
+
+            async with new_session() as second:
+                job = await asyncio.wait_for(jobs.claim(second), timeout=5)
+
+            assert job is not None, "запертая строка спрятала свободную задачу"
+            assert job.kind == "вторая"
+    finally:
+        async with new_session() as cleanup:
+            for row in (await cleanup.execute(select(Job))).scalars().all():
+                await cleanup.delete(row)
+            await cleanup.commit()
 
 
 async def test_claiming_marks_the_job_running(session):
@@ -609,12 +680,12 @@ async def test_error_text_is_cut_not_dropped(session):
     assert job.error.endswith("…")
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/api/test_jobs.py`
 Expected: FAIL — модуля `app.core.jobs` нет.
 
-- [ ] **Шаг 3: Написать `backend/app/core/jobs.py`**
+- [x] **Шаг 3: Написать `backend/app/core/jobs.py`**
 
 ```python
 """Очередь фоновых задач.
@@ -624,8 +695,13 @@ Expected: FAIL — модуля `app.core.jobs` нет.
 она ставится, попадают в одну транзакцию: состояния «задача есть, данных
 нет» не существует.
 
-Взятие — SELECT … FOR UPDATE SKIP LOCKED. Два воркера никогда не возьмут
-одну задачу, и это гарантирует база, а не аккуратность кода.
+Взятие — SELECT … FOR UPDATE SKIP LOCKED, и две его половины отвечают за
+разное. FOR UPDATE запирает строку: одну задачу берёт ровно один воркер, и
+это гарантирует база, а не аккуратность кода. SKIP LOCKED отвечает не за
+это, а за то, что воркер, наткнувшийся на запертую строку, берёт следующую
+задачу вместо того, чтобы ждать на чужом коммите. Проверено обеими
+проверками отдельно: без FOR UPDATE задачу берут двое, без SKIP LOCKED — не
+берёт никто, пока держат замок.
 """
 
 import uuid
@@ -785,7 +861,7 @@ async def fail(session: AsyncSession, job: Job, error: str) -> None:
     await session.commit()
 ```
 
-- [ ] **Шаг 4: Зарегистрировать таблицу в обвязке тестов**
+- [x] **Шаг 4: Зарегистрировать таблицу в обвязке тестов**
 
 В `backend/tests/conftest.py`, к явным импортам моделей:
 
@@ -796,23 +872,24 @@ from app.core.jobs import Job  # noqa: F401  # isort: skip
 Причина там же, где и у прочих: схема тестовой базы создаётся из метаданных,
 а таблица попадает туда, только если её модуль кто-то импортировал.
 
-- [ ] **Шаг 5: Запустить тесты**
+- [x] **Шаг 5: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/api/test_jobs.py -v`
-Expected: PASS, 10 passed
+Expected: PASS, 11 passed
 
-- [ ] **Шаг 6: Доказать охранников мутацией**
+- [x] **Шаг 6: Доказать охранников мутацией**
 
 | Мутация | Обязана упасть |
 |---|---|
-| убрать `skip_locked=True` | `test_two_workers_never_take_the_same_job` |
+| убрать `.with_for_update(...)` целиком | `test_two_workers_never_take_the_same_job` |
+| убрать `skip_locked=True`, оставив `with_for_update()` | `test_a_locked_row_does_not_hide_the_next_job` |
 | убрать ветку `running` + просроченный heartbeat из `claim` | `test_stale_running_job_returns_to_the_queue` |
 | в `claim` не ставить `heartbeat_at` | `test_a_living_job_is_not_taken_away` |
 | в `fail` всегда ставить `failed` | `test_failure_returns_the_job_until_attempts_run_out` |
 | в `fail` не обрезать текст | `test_error_text_is_cut_not_dropped` |
 | в `enqueue` добавить `await session.commit()` | `test_enqueue_does_not_commit_by_itself` |
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add backend/app/core/jobs.py backend/tests/api/test_jobs.py \
@@ -827,20 +904,20 @@ git commit -m "feat: очередь фоновых задач в PostgreSQL"
 **Files:**
 - Create: `backend/alembic/versions/<хеш>_jobs.py` (генерируется)
 
-- [ ] **Шаг 1: Сгенерировать миграцию**
+- [x] **Шаг 1: Сгенерировать миграцию**
 
 ```bash
 make revision m=jobs
 ```
 
-- [ ] **Шаг 2: Прочитать сгенерированное глазами**
+- [x] **Шаг 2: Прочитать сгенерированное глазами**
 
 Alembic не видит переименований и не знает про `JSONB` из диалекта, если
 импорт не попал в файл. Проверь в миграции три вещи: тип `job_status`
 создаётся, колонки `payload` и `result` — `postgresql.JSONB`, индекс
 `ix_jobs_status_created_at` на месте.
 
-- [ ] **Шаг 3: Применить и откатить**
+- [x] **Шаг 3: Применить и откатить**
 
 ```bash
 make migrate
@@ -850,7 +927,7 @@ cd backend && uv run alembic downgrade -1 && uv run alembic upgrade head
 Expected: обе команды с кодом 0. Необратимая миграция — это откат доставки,
 который нечем сопроводить.
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 git add backend/alembic/versions/
@@ -865,7 +942,7 @@ git commit -m "feat: миграция под очередь задач"
 - Create: `backend/app/worker.py`
 - Test: `backend/tests/api/test_worker.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_worker.py`:
 
@@ -949,12 +1026,12 @@ async def test_worker_does_not_import_the_web_application():
     assert subprocess.run([sys.executable, "-c", probe]).returncode == 0
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/api/test_worker.py`
 Expected: FAIL — модуля `app.worker` нет.
 
-- [ ] **Шаг 3: Написать `backend/app/worker.py`**
+- [x] **Шаг 3: Написать `backend/app/worker.py`**
 
 ```python
 """Процесс воркера: берёт задачу из очереди и зовёт обработчик.
@@ -1049,7 +1126,7 @@ if __name__ == "__main__":
     asyncio.run(loop())
 ```
 
-- [ ] **Шаг 4: Запустить тесты**
+- [x] **Шаг 4: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/api/test_worker.py -v`
 Expected: PASS, 5 passed
@@ -1059,7 +1136,7 @@ Expected: PASS, 5 passed
 порядку — вернись сюда после неё. Порядок в плане оставлен читаемым: воркер
 описан рядом с очередью, а не разорван по двум местам.
 
-- [ ] **Шаг 5: Доказать охранников мутацией**
+- [x] **Шаг 5: Доказать охранников мутацией**
 
 | Мутация | Обязана упасть |
 |---|---|
@@ -1067,7 +1144,7 @@ Expected: PASS, 5 passed
 | при неизвестном виде бросать `KeyError` | `test_unknown_kind_fails_the_job_instead_of_the_worker` |
 | дописать `from app.main import app` в `worker.py` | `test_worker_does_not_import_the_web_application` |
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/worker.py backend/tests/api/test_worker.py
@@ -1083,7 +1160,7 @@ git commit -m "feat: процесс воркера и реестр обрабо�
 - Modify: `backend/pyproject.toml` — pandas, openpyxl
 - Test: `backend/tests/unit/test_tables.py`
 
-- [ ] **Шаг 1: Поставить зависимости**
+- [x] **Шаг 1: Поставить зависимости**
 
 ```bash
 cd backend && uv add pandas openpyxl
@@ -1092,7 +1169,7 @@ cd backend && uv add pandas openpyxl
 `openpyxl` — чтение xlsx для pandas; без него `read_excel` падает
 сообщением про отсутствующий движок, а не про формат.
 
-- [ ] **Шаг 2: Написать падающий тест**
+- [x] **Шаг 2: Написать падающий тест**
 
 Create `backend/tests/unit/test_tables.py`:
 
@@ -1115,6 +1192,11 @@ def test_windows_encoding_is_read_too():
     # Таблицы из Excel в России приезжают в cp1251 чаще, чем хотелось бы.
     # Отказ «не UTF-8» человек читает как «файл битый» и идёт искать
     # несуществующую проблему в своей выгрузке.
+    #
+    # Эта проверка — вторая половина решения, принятого в задаче 2:
+    # `storage.detect_kind` о кодировке НЕ судит именно для того, чтобы такой
+    # файл сюда доехал. Убрав поддержку cp1251 здесь, вернёшь отказ, только
+    # уже фоновой задачей — то есть человеку, который увидит его не сразу.
     frame = read_table("имя,цена\nа,1\n".encode("cp1251"), "csv")
     assert list(frame.columns) == ["имя", "цена"]
 
@@ -1171,12 +1253,12 @@ def test_summary_is_json_safe():
     json.dumps(summarise(frame))
 ```
 
-- [ ] **Шаг 3: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 3: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_tables.py`
 Expected: FAIL — модуля `app.domain.tables` нет.
 
-- [ ] **Шаг 4: Написать `backend/app/domain/tables.py`**
+- [x] **Шаг 4: Написать `backend/app/domain/tables.py`**
 
 ```python
 """Чтение таблицы и сводка по ней. Чистое: байты на входе, данные на выходе.
@@ -1297,12 +1379,12 @@ def summarise(frame: pd.DataFrame) -> dict[str, Any]:
     return {"строк": int(len(frame)), "колонки": columns}
 ```
 
-- [ ] **Шаг 5: Запустить тесты**
+- [x] **Шаг 5: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/unit/test_tables.py -v`
 Expected: PASS, 8 passed
 
-- [ ] **Шаг 6: Проверить, что контракт границ не нарушен**
+- [x] **Шаг 6: Проверить, что контракт границ не нарушен**
 
 Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
 Expected: `Contracts: 3 kept, 0 broken.`
@@ -1311,7 +1393,7 @@ Expected: `Contracts: 3 kept, 0 broken.`
 своё `TableError`, а не `RuleViolation`. Красный контракт здесь означает,
 что в модуль пробрался импорт из `core` — чинить надо модуль, а не контракт.
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add backend/app/domain/tables.py backend/tests/unit/test_tables.py \
@@ -1329,7 +1411,7 @@ git commit -m "feat: чтение таблицы и сводка"
 - Modify: `backend/tests/conftest.py`
 - Create: миграция (генерируется)
 
-- [ ] **Шаг 1: Написать `backend/app/features/datasets/models.py`**
+- [x] **Шаг 1: Написать `backend/app/features/datasets/models.py`**
 
 ```python
 """ОБРАЗЕЦ слоя данных. Показывает путь «файл → очередь → счёт → результат».
@@ -1433,7 +1515,7 @@ class ModelArtifact(Base):
     )
 ```
 
-- [ ] **Шаг 2: Зарегистрировать таблицы в обвязке тестов и в Alembic**
+- [x] **Шаг 2: Зарегистрировать таблицы в обвязке тестов и в Alembic**
 
 В `backend/tests/conftest.py`:
 
@@ -1448,7 +1530,7 @@ from app.features.datasets.models import (  # noqa: F401  # isort: skip
 В `backend/alembic/env.py` — рядом с прочими импортами моделей после
 `# isort: split`.
 
-- [ ] **Шаг 3: Сгенерировать и прочитать миграцию**
+- [x] **Шаг 3: Сгенерировать и прочитать миграцию**
 
 ```bash
 make revision m=datasets
@@ -1457,14 +1539,14 @@ make revision m=datasets
 Проверь глазами: внешние ключи с `ondelete="CASCADE"`, `payload` —
 `LargeBinary`, `feature_columns` — `JSONB`, индекс на `(dataset_id, index)`.
 
-- [ ] **Шаг 4: Применить и откатить**
+- [x] **Шаг 4: Применить и откатить**
 
 ```bash
 make migrate
 cd backend && uv run alembic downgrade -1 && uv run alembic upgrade head
 ```
 
-- [ ] **Шаг 5: Коммит**
+- [x] **Шаг 5: Коммит**
 
 ```bash
 git add backend/app/features/datasets/ backend/tests/conftest.py \
@@ -1485,7 +1567,7 @@ git commit -m "feat: таблицы, строки и артефакты моде
 - Modify: `backend/tests/api/test_route_guards.py`
 - Test: `backend/tests/api/test_datasets.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_datasets.py`:
 
@@ -1668,12 +1750,12 @@ async def test_deleting_unknown_dataset_is_404(client, login_as):
     assert (await client.delete(f"/api/datasets/{missing}")).status_code == 404
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/api/test_datasets.py`
 Expected: FAIL — маршрутов `/api/datasets` ещё нет.
 
-- [ ] **Шаг 3: Написать `backend/app/features/datasets/schemas.py`**
+- [x] **Шаг 3: Написать `backend/app/features/datasets/schemas.py`**
 
 ```python
 import uuid
@@ -1700,7 +1782,7 @@ class DatasetOut(BaseModel):
     created_at: datetime
 ```
 
-- [ ] **Шаг 4: Написать `backend/app/features/datasets/service.py`**
+- [x] **Шаг 4: Написать `backend/app/features/datasets/service.py`**
 
 ```python
 """Правила работы с таблицами. ОБРАЗЕЦ слоя данных."""
@@ -1796,7 +1878,7 @@ async def delete_dataset(
     storage.delete(file_id)
 ```
 
-- [ ] **Шаг 5: Написать `backend/app/features/datasets/jobs.py`**
+- [x] **Шаг 5: Написать `backend/app/features/datasets/jobs.py`**
 
 ```python
 """Фоновая работа фичи «Таблицы».
@@ -1883,7 +1965,7 @@ def _json_safe(value: Any) -> Any:
 HANDLERS = {PARSE: parse}
 ```
 
-- [ ] **Шаг 6: Написать `backend/app/features/datasets/router.py`**
+- [x] **Шаг 6: Написать `backend/app/features/datasets/router.py`**
 
 ```python
 import uuid
@@ -1945,7 +2027,7 @@ async def delete_dataset(
     return {"ok": True}
 ```
 
-- [ ] **Шаг 7: Подключить роутер и учесть маршруты в охране**
+- [x] **Шаг 7: Подключить роутер и учесть маршруты в охране**
 
 В `backend/app/main.py` — `datasets_router` в список роутеров.
 
@@ -1953,7 +2035,7 @@ async def delete_dataset(
 защищённых ролью. **Не в список открытых:** таблицы видит вошедший, а
 загружает и удаляет — editor.
 
-- [ ] **Шаг 8: Поставить зависимость для загрузки**
+- [x] **Шаг 8: Поставить зависимость для загрузки**
 
 ```bash
 cd backend && uv add python-multipart
@@ -1962,12 +2044,12 @@ cd backend && uv add python-multipart
 Без неё FastAPI отвечает на `UploadFile` ошибкой про отсутствующий пакет,
 причём в момент запроса, а не при старте.
 
-- [ ] **Шаг 9: Запустить тесты**
+- [x] **Шаг 9: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/api/test_datasets.py -v`
 Expected: PASS, 13 passed
 
-- [ ] **Шаг 10: Доказать охранников мутацией**
+- [x] **Шаг 10: Доказать охранников мутацией**
 
 | Мутация | Обязана упасть |
 |---|---|
@@ -1980,7 +2062,7 @@ Expected: PASS, 13 passed
 | убрать `storage.detect_kind` из сервиса | `test_wrong_content_is_refused_with_a_human_reason` |
 | убрать `storage.check_size` из роутера | `test_too_large_is_refused_before_the_body_reaches_the_disk` |
 
-- [ ] **Шаг 11: Коммит**
+- [x] **Шаг 11: Коммит**
 
 ```bash
 git add backend/app/features/datasets/ backend/app/main.py \
@@ -1998,13 +2080,13 @@ git commit -m "feat: загрузка таблиц и разбор в фоне"
 - Modify: `backend/pyproject.toml` — scikit-learn, joblib
 - Test: `backend/tests/api/test_models.py`
 
-- [ ] **Шаг 1: Поставить зависимости**
+- [x] **Шаг 1: Поставить зависимости**
 
 ```bash
 cd backend && uv add scikit-learn joblib
 ```
 
-- [ ] **Шаг 2: Написать падающий тест**
+- [x] **Шаг 2: Написать падающий тест**
 
 Create `backend/tests/api/test_models.py`:
 
@@ -2183,7 +2265,7 @@ async def test_training_on_a_text_target_is_refused(client, session, login_as):
     assert response.status_code == 202, "числовая колонка — допустимая цель"
 ```
 
-- [ ] **Шаг 3: Дописать обработчик обучения в `jobs.py`**
+- [x] **Шаг 3: Дописать обработчик обучения в `jobs.py`**
 
 ```python
 TRAIN = "datasets.train"
@@ -2262,7 +2344,7 @@ HANDLERS = {PARSE: parse, TRAIN: train}
 живёт обучение и как хранится артефакт, а не как настраивать модель: подбор
 параметров — решение под конкретную задачу, а её пока нет.
 
-- [ ] **Шаг 4: Дописать сервис — постановка обучения и предсказание**
+- [x] **Шаг 4: Дописать сервис — постановка обучения и предсказание**
 
 В `service.py` дописать импорты — `Any` из `typing`, `RuleViolation` из
 `app.core.errors`, `Job` из `app.core.jobs`, `TRAIN` из
@@ -2340,7 +2422,7 @@ async def predict(
     return float(model.predict(values)[0])
 ```
 
-- [ ] **Шаг 5: Дописать схемы и маршруты**
+- [x] **Шаг 5: Дописать схемы и маршруты**
 
 `schemas.py`:
 
@@ -2419,16 +2501,16 @@ async def predict(
     return {"значение": await service.predict(session, model_id, payload.row)}
 ```
 
-- [ ] **Шаг 6: Подключить и учесть в охране маршрутов**
+- [x] **Шаг 6: Подключить и учесть в охране маршрутов**
 
 `main.py` — `models_router`; `test_route_guards.py` — три новых маршрута.
 
-- [ ] **Шаг 7: Запустить тесты**
+- [x] **Шаг 7: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/api/test_models.py -v`
 Expected: PASS, 8 passed
 
-- [ ] **Шаг 8: Доказать охранников мутацией**
+- [x] **Шаг 8: Доказать охранников мутацией**
 
 | Мутация | Обязана упасть |
 |---|---|
@@ -2438,7 +2520,7 @@ Expected: PASS, 8 passed
 | не сохранять `payload` модели | `test_trained_model_is_stored_with_its_metric` |
 | добавить `payload` в `ModelOut` | `test_trained_models_are_listed_without_their_payload` |
 
-- [ ] **Шаг 9: Коммит**
+- [x] **Шаг 9: Коммит**
 
 ```bash
 git add backend/app/features/datasets/ backend/app/main.py \
@@ -2456,7 +2538,7 @@ git commit -m "feat: обучение модели и предсказание"
 - Create: `backend/app/integrations/fixtures/ответ.json`
 - Test: `backend/tests/unit/test_integrations.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_integrations.py`:
 
@@ -2510,7 +2592,7 @@ def test_live_without_a_key_refuses_loudly(monkeypatch):
     assert "INTEGRATIONS_API_KEY" in str(denial.value)
 ```
 
-- [ ] **Шаг 2: Дописать настройки клиента**
+- [x] **Шаг 2: Дописать настройки клиента**
 
 В `Settings`:
 
@@ -2523,7 +2605,7 @@ def test_live_without_a_key_refuses_loudly(monkeypatch):
 поле заставило бы заполнять их всех, включая тех, кому внешние модели не
 нужны вовсе.
 
-- [ ] **Шаг 3: Написать `backend/app/integrations/client.py`**
+- [x] **Шаг 3: Написать `backend/app/integrations/client.py`**
 
 ```python
 """Клиент внешних моделей: три режима вместо одного.
@@ -2582,7 +2664,7 @@ def ask(prompt: str) -> str:
     return str(response.json()["answer"])
 ```
 
-- [ ] **Шаг 4: Записать образец ответа**
+- [x] **Шаг 4: Записать образец ответа**
 
 `backend/app/integrations/fixtures/ответ.json`:
 
@@ -2590,7 +2672,7 @@ def ask(prompt: str) -> str:
 { "answer": "Записанный ответ внешней модели" }
 ```
 
-- [ ] **Шаг 5: Запустить тесты и закоммитить**
+- [x] **Шаг 5: Запустить тесты и закоммитить**
 
 Run: `cd backend && uv run pytest tests/unit/test_integrations.py -v`
 Expected: PASS, 5 passed
@@ -2610,7 +2692,7 @@ git commit -m "feat: клиент внешних моделей с режима�
 - Modify: `backend/app/main.py`, `backend/tests/api/test_route_guards.py`
 - Test: дописать в `backend/tests/api/test_jobs.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Дописать в `backend/tests/api/test_jobs.py`:
 
@@ -2674,7 +2756,7 @@ async def test_limit_has_a_hard_ceiling(client, login_as):
 
 К шапке файла добавить `from app.domain.roles import Role`.
 
-- [ ] **Шаг 2: Написать `backend/app/features/jobs/service.py`**
+- [x] **Шаг 2: Написать `backend/app/features/jobs/service.py`**
 
 ```python
 """Чтение очереди для экрана. Пишет в неё core/jobs.py."""
@@ -2718,7 +2800,7 @@ async def worker_is_alive(session: AsyncSession) -> bool:
     return row.first() is not None
 ```
 
-- [ ] **Шаг 3: Написать `backend/app/features/jobs/router.py`**
+- [x] **Шаг 3: Написать `backend/app/features/jobs/router.py`**
 
 ```python
 import uuid
@@ -2775,14 +2857,14 @@ async def worker_health(
     return {"воркер_жив": await service.worker_is_alive(session)}
 ```
 
-- [ ] **Шаг 4: Подключить, учесть в охране, прогнать**
+- [x] **Шаг 4: Подключить, учесть в охране, прогнать**
 
 `main.py` — `jobs_router`; `test_route_guards.py` — два маршрута.
 
 Run: `cd backend && uv run pytest tests/api/test_jobs.py -v`
 Expected: PASS, 16 passed
 
-- [ ] **Шаг 5: Доказать охранников мутацией**
+- [x] **Шаг 5: Доказать охранников мутацией**
 
 | Мутация | Обязана упасть |
 |---|---|
@@ -2792,7 +2874,7 @@ Expected: PASS, 16 passed
 | убрать `le=service.MAX_LIMIT` | `test_limit_has_a_hard_ceiling` |
 | `worker_is_alive` всегда True | `test_worker_liveness_is_reported` |
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/features/jobs/ backend/app/main.py \
@@ -2804,10 +2886,16 @@ git commit -m "feat: экран состояния задач"
 
 ### Задача 12: Границы модулей
 
+> **Сделано частично, раньше срока.** Контракты `features-are-independent` и
+> `router-goes-through-service` уже расширены на `datasets`, а
+> `tests/unit/test_boundaries_cover_every_feature.py` сверяет их состав с
+> диском — руками этот список больше не ведётся. Остаются два новых
+> контракта из шагов ниже: про обработчики задач и про воркер.
+
 **Files:**
 - Modify: `backend/.importlinter`
 
-- [ ] **Шаг 1: Дописать два контракта**
+- [x] **Шаг 1: Дописать два контракта**
 
 ```ini
 [importlinter:contract:jobs-do-not-know-about-http]
@@ -2839,7 +2927,7 @@ forbidden_modules =
 наследует и раздачу статики, и её падения. Тест на это уже есть, контракт
 ловит то же самое раньше и дешевле.
 
-- [ ] **Шаг 2: Проверить**
+- [x] **Шаг 2: Проверить**
 
 Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
 Expected: `Contracts: 5 kept, 0 broken.`
@@ -2847,7 +2935,7 @@ Expected: `Contracts: 5 kept, 0 broken.`
 Если контракт красный — чини код, а не контракт. Красный здесь означает,
 что фоновая работа и правда зависит от веба.
 
-- [ ] **Шаг 3: Коммит**
+- [x] **Шаг 3: Коммит**
 
 ```bash
 git add backend/.importlinter
@@ -2858,11 +2946,17 @@ git commit -m "chore: границы фоновой работы и воркер
 
 ### Задача 13: Экраны
 
+> **Хвост, оставленный задачей 8.** Упавший разбор оставляет таблицу с
+> `summary = NULL` — на экране это неотличимо от «считаем». Причина живёт в
+> задаче (`job.error`), и экран таблиц обязан достать её оттуда: сам по себе
+> список таблиц отказ не доносит. Спека требует прямо — «задача упала,
+> причина видна на экране, а не только в серверном логе».
+
 **Files:**
 - Create: `frontend/src/routes/datasets.tsx`, `frontend/src/routes/jobs.tsx`
 - Modify: `frontend/src/router.tsx`, `frontend/src/components/site-nav.tsx`
 
-- [ ] **Шаг 1: Перегенерировать типы клиента**
+- [x] **Шаг 1: Перегенерировать типы клиента**
 
 ```bash
 make openapi
@@ -2871,7 +2965,7 @@ make openapi
 Без этого `tsc` не знает новых маршрутов, а `make check` краснеет на сверке
 типов со схемой — и выглядит это как поломка фронтенда.
 
-- [ ] **Шаг 2: Написать `frontend/src/routes/jobs.tsx`**
+- [x] **Шаг 2: Написать `frontend/src/routes/jobs.tsx`**
 
 Экран задач. Требования, а не разметка — вёрстку делай по образцу
 `frontend/src/routes/audit.tsx`, он ближе всего:
@@ -2892,7 +2986,7 @@ make openapi
   греет контур задаром. В TanStack Query это `refetchInterval` функцией от
   данных.
 
-- [ ] **Шаг 3: Написать `frontend/src/routes/datasets.tsx`**
+- [x] **Шаг 3: Написать `frontend/src/routes/datasets.tsx`**
 
 Экран таблиц. По образцу `frontend/src/routes/expenses.tsx`:
 
@@ -2910,7 +3004,7 @@ make openapi
 - ошибка поля из конверта встаёт под своим полем, общая — алертом. Так
   сделано на всех экранах ядра.
 
-- [ ] **Шаг 4: Добавить маршруты и ссылки**
+- [x] **Шаг 4: Добавить маршруты и ссылки**
 
 В `frontend/src/router.tsx` — две страницы. Экран таблиц тянет за собой
 разбор ответов и формы, экран задач лёгкий: обе грузи обычным `page(...)`,
@@ -2920,12 +3014,12 @@ make openapi
 В `frontend/src/components/site-nav.tsx` — две ссылки: «Таблицы» с ролью
 `viewer`, «Задачи» с ролью `viewer`.
 
-- [ ] **Шаг 5: Проверить**
+- [x] **Шаг 5: Проверить**
 
 Run: `make check`
 Expected: зелёный целиком.
 
-- [ ] **Шаг 6: Посмотреть глазами**
+- [x] **Шаг 6: Посмотреть глазами**
 
 ```bash
 cd backend && uv run uvicorn app.main:app --port 8000    # в фоне
@@ -2938,7 +3032,7 @@ cd frontend && npm run dev
 экран задач обязан сказать, что брать её некому, а не показывать вечное «в
 очереди». Это единственная проверка, которую не делает ни один тест.
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add frontend/src/routes/datasets.tsx frontend/src/routes/jobs.tsx \
@@ -2955,7 +3049,7 @@ git commit -m "feat: экраны таблиц и задач"
 - Modify: `.github/workflows/deploy.yml`
 - Modify: `docs/commands/status.md`, `docs/superpowers/runbooks/server-setup.md`
 
-- [ ] **Шаг 1: Запускать воркер той же доставкой**
+- [x] **Шаг 1: Запускать воркер той же доставкой**
 
 В теле удалённого скрипта `deploy.yml`, после блока запуска приложения:
 
@@ -2977,7 +3071,7 @@ fi
 Heredoc в кавычках, поэтому ни экранировать `$`, ни следить за обратными
 кавычками не нужно — это уже сделано и стоило одной сломанной доставки.
 
-- [ ] **Шаг 2: Научить `/status` спрашивать про воркер**
+- [x] **Шаг 2: Научить `/status` спрашивать про воркер**
 
 `<слаг>-status` сгенерирован провижинером под одно имя процесса и воркера не
 покажет. Скрипт создаётся на каждый слаг отдельно, поэтому правка провижинера
@@ -2992,12 +3086,12 @@ ssh <слаг>-ops sudo -u deploy PM2_HOME=/home/deploy/.pm2 pm2 describe <сл�
 и в текст — что живость очереди смотрят на экране «Задачи», а не по коду
 ответа контура.
 
-- [ ] **Шаг 3: Дописать runbook**
+- [x] **Шаг 3: Дописать runbook**
 
 В `docs/superpowers/runbooks/server-setup.md` — раздел про два процесса:
 имена, команда запуска воркера, и что `<слаг>-status` показывает только веб.
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 git add .github/workflows/deploy.yml docs/commands/status.md \
@@ -3013,7 +3107,7 @@ git commit -m "ci: воркер поднимается доставкой, /stat
 - Create: `frontend/tests/e2e/datasets.spec.ts`
 - Modify: `frontend/playwright.config.ts`
 
-- [ ] **Шаг 1: Поднимать воркер вместе с приложением**
+- [x] **Шаг 1: Поднимать воркер вместе с приложением**
 
 `webServer` в `playwright.config.ts` принимает список. Существующий объект
 с приложением становится **первым элементом массива без единой правки
@@ -3061,7 +3155,7 @@ git commit -m "ci: воркер поднимается доставкой, /stat
 Гасить процесс руками не нужно — Playwright снимает оба элемента списка
 после прогона тем же механизмом.
 
-- [ ] **Шаг 2: Написать сценарий**
+- [x] **Шаг 2: Написать сценарий**
 
 Create `frontend/tests/e2e/datasets.spec.ts`:
 
@@ -3093,6 +3187,9 @@ test("таблица загружается, считается в фоне и �
   await page.getByRole("button", { name: "Загрузить" }).click()
 
   // Строка появляется сразу — разбор ещё идёт.
+  // Фильтр по имени С РАСШИРЕНИЕМ: экран показывает original_name, а не
+  // name — бэкенд у второго срезает расширение. Поменяешь колонку на name,
+  // и фильтр перестанет находить строку.
   const row = page.getByRole("row").filter({ hasText: name })
   await expect(row).toBeVisible()
   await expect(row).toContainText("разбирается")
@@ -3100,10 +3197,20 @@ test("таблица загружается, считается в фоне и �
   // А через несколько секунд её считает воркер. Ожидание длинное
   // намеренно: воркер опрашивает очередь раз в секунду, и на медленной
   // машине первый оборот приходит не сразу.
-  await expect(row).toContainText("3", { timeout: 30_000 })
+  //
+  // Ждём БЕЙДЖ, а не число строк. Первая редакция ждала текста «3» во всей
+  // строке таблицы — и проходила мгновенно, ещё до разбора: имя файла
+  // содержит Date.now(), а в нём почти всегда есть тройка. Проверка была
+  // зелёной, ничего не дождавшись. Найдено при вёрстке экранов.
+  await expect(row).toContainText("разобрана", { timeout: 30_000 })
+  await expect(row.getByRole("cell", { name: "3", exact: true })).toBeVisible()
 
   await row.click()
   await expect(page.getByText("строк: 3")).toBeVisible()
+  // «город» — текстовая колонка, и в выборе целевой её нет намеренно
+  // (сервер отказывает по нечисловой цели, предлагать её значило бы
+  // предлагать заведомый отказ). Здесь она ищется в СВОДКЕ, где есть все
+  // колонки, а не в форме обучения.
   await expect(page.getByText("город")).toBeVisible()
 })
 
@@ -3114,14 +3221,14 @@ test("задача видна на экране задач и доходит д�
 })
 ```
 
-- [ ] **Шаг 3: Прогнать три раза подряд**
+- [x] **Шаг 3: Прогнать три раза подряд**
 
 Run: `cd frontend && npx playwright test`
 Expected: 14 passed (11 прежних + 3 новых), три прогона подряд без единого
 мигания. Сквозные сценарии — главный источник ложных отказов; проверка,
 падающая через раз, обесценивает весь прогон.
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 git add frontend/tests/e2e/datasets.spec.ts frontend/playwright.config.ts
@@ -3136,7 +3243,7 @@ git commit -m "test: сквозной сценарий слоя данных"
 - Modify: `CHECKLIST.md`, `AGENTS.md`, `docs/commands/onboarding.md`
 - Modify: `scripts/onboarding-check.mjs`
 
-- [ ] **Шаг 1: Обновить реестр возможностей**
+- [x] **Шаг 1: Обновить реестр возможностей**
 
 В `CHECKLIST.md` строки, стоявшие `absent` с пометкой «приедет спекой слоя
 данных», становятся `included`:
@@ -3158,7 +3265,7 @@ git commit -m "test: сквозной сценарий слоя данных"
 | `<слаг>-status` не видит воркер | Скрипт сгенерирован провижинером под одно имя процесса и создаётся на каждый слаг отдельно, поэтому правка провижинера не чинит заведённые контуры. Живость очереди смотрят на экране «Задачи» |
 | Один воркер | `SKIP LOCKED` рассчитан на любое их число, второй добавляется строкой в доставке. Делать это без нагрузки — удваивать эксплуатацию задаром |
 
-- [ ] **Шаг 2: Дописать правила в `AGENTS.md`**
+- [x] **Шаг 2: Дописать правила в `AGENTS.md`**
 
 Раздел про слой данных:
 
@@ -3172,7 +3279,7 @@ git commit -m "test: сквозной сценарий слоя данных"
   копируется база;
 - клиент внешних моделей в тестах и сквозных сценариях идёт в режиме `mock`.
 
-- [ ] **Шаг 3: Дописать установку**
+- [x] **Шаг 3: Дописать установку**
 
 В `docs/commands/onboarding.md` — шаг про каталог загрузок на контуре
 (`/var/www/<слаг>/uploads`, создаётся приложением) и про то, что после
@@ -3181,7 +3288,7 @@ git commit -m "test: сквозной сценарий слоя данных"
 В `scripts/onboarding-check.mjs` — проверка, что `UPLOAD_DIR` в `.env`
 контура задан либо намеренно оставлен пустым.
 
-- [ ] **Шаг 4: Прогнать всё и закоммитить**
+- [x] **Шаг 4: Прогнать всё и закоммитить**
 
 ```bash
 make check

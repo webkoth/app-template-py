@@ -19,11 +19,20 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  // vitest.config.ts тоже проверяется типами: без него tsc -b этот файл не
-  // видит вовсе, и опечатка в конфиге тестов проходит мимо `make check`.
+  // Здесь перечислена ВСЯ обвязка, а не только сборка. Без строки файл не
+  // виден `tsc -b` вовсе, и опечатка в нём проходит мимо `make check` молча:
+  // Playwright типы не сверяет и запускает спеки как есть. Проверено —
+  // playwright.config.ts и весь tests/e2e не проверялись ничем, хотя
+  // `make check` выглядел исчерпывающим.
+  //
   // Команда смены темы живёт не здесь, а в tsconfig.app.json: она импортирует
   // модули из src, а этот конфиг требует у относительных импортов явного
   // расширения .js — то есть заставил бы дописать его и в скопированном
   // lib/design, разведя два шаблона на ровном месте.
-  "include": ["vite.config.ts", "vitest.config.ts"]
+  "include": [
+    "vite.config.ts",
+    "vitest.config.ts",
+    "playwright.config.ts",
+    "tests/e2e"
+  ]
 }

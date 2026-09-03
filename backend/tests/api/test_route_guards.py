@@ -215,6 +215,25 @@ def test_the_rest_of_the_api_is_guarded_by_role():
         "GET /api/expenses",
         "POST /api/expenses",
         "DELETE /api/expenses/{expense_id}",
+        # Таблицы: смотрит их любой вошедший, а загружает и удаляет только
+        # editor. В FULLY_OPEN и LOGIN_ONLY им места нет — загруженная
+        # таблица это данные приложения, а не общедоступный файл.
+        "GET /api/datasets",
+        "POST /api/datasets",
+        "DELETE /api/datasets/{dataset_id}",
+        # Обучение и предсказание. Обучает editor, смотрит и предсказывает
+        # любой вошедший: предсказание ничего не меняет, а модель, по
+        # которой оно идёт, уже обучена под присмотром роли.
+        "POST /api/datasets/{dataset_id}/models",
+        "GET /api/datasets/{dataset_id}/models",
+        "POST /api/models/{model_id}/predict",
+        # Экран задач. Свои задачи видит любой вошедший, все — только
+        # администратор, и разделяет их сам маршрут: роль здесь не только
+        # пропускает, но и решает, чью очередь показать. Признак живости
+        # воркера закрыт вместе со списком — анониму незачем знать, работает
+        # ли фоновая половина контура прямо сейчас.
+        "GET /api/jobs",
+        "GET /api/jobs/health",
         "GET /api/audit",
     ):
         assert name in guarded, f"{name} больше не проверяет роль"

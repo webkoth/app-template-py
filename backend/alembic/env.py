@@ -21,16 +21,11 @@ from sqlalchemy.pool import NullPool
 from app.core.config import settings
 from app.core.db import Base
 
-# Импорт ради регистрации таблиц в Base.metadata: без него autogenerate
-# видит пустую схему и предлагает удалить всё, что есть в базе.
-#
-# Директива ниже не даёт ruff слить эти три строки с импортами выше и
-# разложить всё по алфавиту: тогда комментарий остался бы над одним
-# случайным импортом из трёх, а объяснять он должен все три.
-# isort: split
-from app.core.audit import AuditLog  # noqa: F401
-from app.core.users import User  # noqa: F401
-from app.features.expenses.models import Expense  # noqa: F401
+# Состав схемы — в app/models.py, единственным списком. Без импорта таблица
+# не попадает в Base.metadata, и autogenerate выдаёт ПУСТУЮ миграцию: файл
+# ревизии создан, прогон зелёный, таблицы в базе нет. Ровно это и случилось
+# с очередью, когда список вёлся здесь отдельно от обвязки тестов.
+from app import models  # noqa: F401  # isort: skip
 
 config = context.config
 # %% вместо %: set_main_option кладёт значение в ConfigParser, а тот считает

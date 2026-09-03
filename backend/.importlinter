@@ -11,13 +11,20 @@ name = domain не знает ни про базу, ни про HTTP, ни пр�
 type = forbidden
 source_modules =
     app.domain
+# Список ведётся руками и потому отстаёт: до этой строки в нём не было
+# ничего про внешние модели, и `app/domain/` мог сходить за ответом по сети,
+# не нарушив ни одного контракта. Чистая логика тем и ценна, что её можно
+# посчитать без сети, ключей и чужого тарифа. Появился новый источник
+# ввода-вывода — впиши его сюда, иначе правило на него не распространяется.
 forbidden_modules =
     app.core
     app.features
+    app.integrations
     sqlalchemy
     asyncpg
     alembic
     fastapi
+    httpx
 
 [importlinter:contract:features-are-independent]
 name = фичи не лезут друг другу внутрь
@@ -28,6 +35,8 @@ modules =
     app.features.expenses
     app.features.audit
     app.features.meta
+    app.features.datasets
+    app.features.jobs
 
 [importlinter:contract:router-goes-through-service]
 name = router не ходит в модели мимо service
@@ -42,8 +51,65 @@ source_modules =
     app.features.auth.router
     app.features.users.router
     app.features.expenses.router
+    app.features.datasets.router
     app.features.audit.router
+    app.features.meta.router
+    app.features.jobs.router
 forbidden_modules =
     app.features.expenses.models
+    app.features.datasets.models
     app.core.users
     app.core.audit
+    # Очередь — такая же таблица в core, как журнал и учётные записи, и
+    # закрыта от роутеров по той же причине. Здесь она не формальность:
+    # роутер экрана задач собирает ответ ИЗ объектов Job, и сходить за ними
+    # самому, минуя сервис, — первое, что просится.
+    app.core.jobs
+
+[importlinter:contract:jobs-do-not-know-about-http]
+name = обработчики задач не ходят в роутеры
+type = forbidden
+# Только прямые импорты запрещены явно перечисленными модулями, а
+# `fastapi` — целиком: обработчик не должен знать, что его позвали ИЗ
+# HTTP-запроса. Обработчик, завязанный на `UploadFile` или на форму
+# роутера, нельзя вызвать ни из скрипта, ни из планировщика, ни из другого
+# обработчика — а именно так задачи и предполагается запускать.
+allow_indirect_imports = True
+source_modules =
+    app.features.datasets.jobs
+forbidden_modules =
+    app.features.datasets.router
+    app.features.jobs.router
+    fastapi
+
+[importlinter:contract:worker-is-not-the-web-application]
+name = воркер не тянет за собой веб-приложение
+type = forbidden
+# Воркер, притащивший `app.main`, наследует и время его старта (сборку
+# роутеров, монтирование статики), и его отказы — процесс очереди не
+# должен зависеть от того, поднялась ли раздача фронтенда. `app.core.static`
+# запрещён отдельно от `app.main`: раздача статики может импортироваться и
+# без сборки приложения целиком, и обе дороги в веб должны быть закрыты.
+# Тест на то же самое уже есть в `backend/tests/api/test_worker.py` — он не
+# дублирование: тест ловит раньше и объясняет понятнее, контракт ловит
+# дешевле (без похода в отдельный процесс). Оставлены оба намеренно.
+source_modules =
+    app.worker
+forbidden_modules =
+    app.main
+    app.core.static
+
+[importlinter:contract:integrations-are-replaceable]
+name = клиент внешних моделей не знает про фичи и про базу
+type = forbidden
+# Спека слоя данных обещает: «конкретного поставщика шаблон не выбирает —
+# выбирает установка». Контракт делает это обещание проверяемым, а не
+# просто написанным. Клиенту нужен только текст запроса и настройки —
+# знание о Dataset или прямой SQL-запрос привязали бы его к одной фиче и
+# сделали бы подмену поставщика на установке правкой кода, а не настройки.
+source_modules =
+    app.integrations
+forbidden_modules =
+    app.features
+    sqlalchemy
+    fastapi

@@ -13,8 +13,10 @@ import { PageMain } from "@/components/page-main"
 import { RequestFailure } from "@/components/request-failure"
 import { SiteNav } from "@/components/site-nav"
 import { AuditPage } from "@/routes/audit"
+import { DatasetsPage } from "@/routes/datasets"
 import { ExpensesPage } from "@/routes/expenses"
 import { HomePage } from "@/routes/home"
+import { JobsPage } from "@/routes/jobs"
 import { LoginPage } from "@/routes/login"
 import { UsersPage } from "@/routes/users"
 
@@ -109,6 +111,11 @@ const routeTree = rootRoute.addChildren([
   privateRoute.addChildren([
     page("/", HomePage),
     page("/expenses", ExpensesPage),
+    // Обычным page, а не lazyPage: экран таблиц тянет за собой формы и
+    // разбор сводки, экран задач лёгок вовсе — вместе они и близко не
+    // весят того, ради чего витрина и правила вынесены отдельным куском.
+    page("/datasets", DatasetsPage),
+    page("/jobs", JobsPage),
     page("/users", UsersPage),
     page("/audit", AuditPage),
     lazyPage("/design", () => import("@/routes/design"), "DesignPage"),
