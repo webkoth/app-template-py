@@ -12,6 +12,8 @@ import { hasRank, type CurrentUser } from "@/lib/auth"
 const LINKS = [
   { to: "/", label: "Главная", role: "viewer" as const },
   { to: "/expenses", label: "Расходы", role: "viewer" as const },
+  { to: "/datasets", label: "Таблицы", role: "viewer" as const },
+  { to: "/jobs", label: "Задачи", role: "viewer" as const },
   { to: "/users", label: "Люди", role: "admin" as const },
   { to: "/audit", label: "Журнал", role: "admin" as const },
   { to: "/design", label: "Дизайн", role: "viewer" as const },
