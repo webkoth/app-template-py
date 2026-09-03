@@ -942,7 +942,7 @@ git commit -m "feat: миграция под очередь задач"
 - Create: `backend/app/worker.py`
 - Test: `backend/tests/api/test_worker.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/api/test_worker.py`:
 
@@ -1026,12 +1026,12 @@ async def test_worker_does_not_import_the_web_application():
     assert subprocess.run([sys.executable, "-c", probe]).returncode == 0
 ```
 
-- [ ] **Шаг 2: Запустить тест и убедиться, что он падает**
+- [x] **Шаг 2: Запустить тест и убедиться, что он падает**
 
 Run: `cd backend && uv run pytest tests/api/test_worker.py`
 Expected: FAIL — модуля `app.worker` нет.
 
-- [ ] **Шаг 3: Написать `backend/app/worker.py`**
+- [x] **Шаг 3: Написать `backend/app/worker.py`**
 
 ```python
 """Процесс воркера: берёт задачу из очереди и зовёт обработчик.
@@ -1126,7 +1126,7 @@ if __name__ == "__main__":
     asyncio.run(loop())
 ```
 
-- [ ] **Шаг 4: Запустить тесты**
+- [x] **Шаг 4: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/api/test_worker.py -v`
 Expected: PASS, 5 passed
@@ -1136,7 +1136,7 @@ Expected: PASS, 5 passed
 порядку — вернись сюда после неё. Порядок в плане оставлен читаемым: воркер
 описан рядом с очередью, а не разорван по двум местам.
 
-- [ ] **Шаг 5: Доказать охранников мутацией**
+- [x] **Шаг 5: Доказать охранников мутацией**
 
 | Мутация | Обязана упасть |
 |---|---|
@@ -1144,7 +1144,7 @@ Expected: PASS, 5 passed
 | при неизвестном виде бросать `KeyError` | `test_unknown_kind_fails_the_job_instead_of_the_worker` |
 | дописать `from app.main import app` в `worker.py` | `test_worker_does_not_import_the_web_application` |
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/worker.py backend/tests/api/test_worker.py
@@ -2080,13 +2080,13 @@ git commit -m "feat: загрузка таблиц и разбор в фоне"
 - Modify: `backend/pyproject.toml` — scikit-learn, joblib
 - Test: `backend/tests/api/test_models.py`
 
-- [ ] **Шаг 1: Поставить зависимости**
+- [x] **Шаг 1: Поставить зависимости**
 
 ```bash
 cd backend && uv add scikit-learn joblib
 ```
 
-- [ ] **Шаг 2: Написать падающий тест**
+- [x] **Шаг 2: Написать падающий тест**
 
 Create `backend/tests/api/test_models.py`:
 
@@ -2265,7 +2265,7 @@ async def test_training_on_a_text_target_is_refused(client, session, login_as):
     assert response.status_code == 202, "числовая колонка — допустимая цель"
 ```
 
-- [ ] **Шаг 3: Дописать обработчик обучения в `jobs.py`**
+- [x] **Шаг 3: Дописать обработчик обучения в `jobs.py`**
 
 ```python
 TRAIN = "datasets.train"
@@ -2344,7 +2344,7 @@ HANDLERS = {PARSE: parse, TRAIN: train}
 живёт обучение и как хранится артефакт, а не как настраивать модель: подбор
 параметров — решение под конкретную задачу, а её пока нет.
 
-- [ ] **Шаг 4: Дописать сервис — постановка обучения и предсказание**
+- [x] **Шаг 4: Дописать сервис — постановка обучения и предсказание**
 
 В `service.py` дописать импорты — `Any` из `typing`, `RuleViolation` из
 `app.core.errors`, `Job` из `app.core.jobs`, `TRAIN` из
@@ -2422,7 +2422,7 @@ async def predict(
     return float(model.predict(values)[0])
 ```
 
-- [ ] **Шаг 5: Дописать схемы и маршруты**
+- [x] **Шаг 5: Дописать схемы и маршруты**
 
 `schemas.py`:
 
@@ -2501,16 +2501,16 @@ async def predict(
     return {"значение": await service.predict(session, model_id, payload.row)}
 ```
 
-- [ ] **Шаг 6: Подключить и учесть в охране маршрутов**
+- [x] **Шаг 6: Подключить и учесть в охране маршрутов**
 
 `main.py` — `models_router`; `test_route_guards.py` — три новых маршрута.
 
-- [ ] **Шаг 7: Запустить тесты**
+- [x] **Шаг 7: Запустить тесты**
 
 Run: `cd backend && uv run pytest tests/api/test_models.py -v`
 Expected: PASS, 8 passed
 
-- [ ] **Шаг 8: Доказать охранников мутацией**
+- [x] **Шаг 8: Доказать охранников мутацией**
 
 | Мутация | Обязана упасть |
 |---|---|
@@ -2520,7 +2520,7 @@ Expected: PASS, 8 passed
 | не сохранять `payload` модели | `test_trained_model_is_stored_with_its_metric` |
 | добавить `payload` в `ModelOut` | `test_trained_models_are_listed_without_their_payload` |
 
-- [ ] **Шаг 9: Коммит**
+- [x] **Шаг 9: Коммит**
 
 ```bash
 git add backend/app/features/datasets/ backend/app/main.py \
@@ -2538,7 +2538,7 @@ git commit -m "feat: обучение модели и предсказание"
 - Create: `backend/app/integrations/fixtures/ответ.json`
 - Test: `backend/tests/unit/test_integrations.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Create `backend/tests/unit/test_integrations.py`:
 
@@ -2592,7 +2592,7 @@ def test_live_without_a_key_refuses_loudly(monkeypatch):
     assert "INTEGRATIONS_API_KEY" in str(denial.value)
 ```
 
-- [ ] **Шаг 2: Дописать настройки клиента**
+- [x] **Шаг 2: Дописать настройки клиента**
 
 В `Settings`:
 
@@ -2605,7 +2605,7 @@ def test_live_without_a_key_refuses_loudly(monkeypatch):
 поле заставило бы заполнять их всех, включая тех, кому внешние модели не
 нужны вовсе.
 
-- [ ] **Шаг 3: Написать `backend/app/integrations/client.py`**
+- [x] **Шаг 3: Написать `backend/app/integrations/client.py`**
 
 ```python
 """Клиент внешних моделей: три режима вместо одного.
@@ -2664,7 +2664,7 @@ def ask(prompt: str) -> str:
     return str(response.json()["answer"])
 ```
 
-- [ ] **Шаг 4: Записать образец ответа**
+- [x] **Шаг 4: Записать образец ответа**
 
 `backend/app/integrations/fixtures/ответ.json`:
 
@@ -2672,7 +2672,7 @@ def ask(prompt: str) -> str:
 { "answer": "Записанный ответ внешней модели" }
 ```
 
-- [ ] **Шаг 5: Запустить тесты и закоммитить**
+- [x] **Шаг 5: Запустить тесты и закоммитить**
 
 Run: `cd backend && uv run pytest tests/unit/test_integrations.py -v`
 Expected: PASS, 5 passed
@@ -2692,7 +2692,7 @@ git commit -m "feat: клиент внешних моделей с режима�
 - Modify: `backend/app/main.py`, `backend/tests/api/test_route_guards.py`
 - Test: дописать в `backend/tests/api/test_jobs.py`
 
-- [ ] **Шаг 1: Написать падающий тест**
+- [x] **Шаг 1: Написать падающий тест**
 
 Дописать в `backend/tests/api/test_jobs.py`:
 
@@ -2756,7 +2756,7 @@ async def test_limit_has_a_hard_ceiling(client, login_as):
 
 К шапке файла добавить `from app.domain.roles import Role`.
 
-- [ ] **Шаг 2: Написать `backend/app/features/jobs/service.py`**
+- [x] **Шаг 2: Написать `backend/app/features/jobs/service.py`**
 
 ```python
 """Чтение очереди для экрана. Пишет в неё core/jobs.py."""
@@ -2800,7 +2800,7 @@ async def worker_is_alive(session: AsyncSession) -> bool:
     return row.first() is not None
 ```
 
-- [ ] **Шаг 3: Написать `backend/app/features/jobs/router.py`**
+- [x] **Шаг 3: Написать `backend/app/features/jobs/router.py`**
 
 ```python
 import uuid
@@ -2857,14 +2857,14 @@ async def worker_health(
     return {"воркер_жив": await service.worker_is_alive(session)}
 ```
 
-- [ ] **Шаг 4: Подключить, учесть в охране, прогнать**
+- [x] **Шаг 4: Подключить, учесть в охране, прогнать**
 
 `main.py` — `jobs_router`; `test_route_guards.py` — два маршрута.
 
 Run: `cd backend && uv run pytest tests/api/test_jobs.py -v`
 Expected: PASS, 16 passed
 
-- [ ] **Шаг 5: Доказать охранников мутацией**
+- [x] **Шаг 5: Доказать охранников мутацией**
 
 | Мутация | Обязана упасть |
 |---|---|
@@ -2874,7 +2874,7 @@ Expected: PASS, 16 passed
 | убрать `le=service.MAX_LIMIT` | `test_limit_has_a_hard_ceiling` |
 | `worker_is_alive` всегда True | `test_worker_liveness_is_reported` |
 
-- [ ] **Шаг 6: Коммит**
+- [x] **Шаг 6: Коммит**
 
 ```bash
 git add backend/app/features/jobs/ backend/app/main.py \
@@ -2895,7 +2895,7 @@ git commit -m "feat: экран состояния задач"
 **Files:**
 - Modify: `backend/.importlinter`
 
-- [ ] **Шаг 1: Дописать два контракта**
+- [x] **Шаг 1: Дописать два контракта**
 
 ```ini
 [importlinter:contract:jobs-do-not-know-about-http]
@@ -2927,7 +2927,7 @@ forbidden_modules =
 наследует и раздачу статики, и её падения. Тест на это уже есть, контракт
 ловит то же самое раньше и дешевле.
 
-- [ ] **Шаг 2: Проверить**
+- [x] **Шаг 2: Проверить**
 
 Run: `cd backend && uv run --group lint lint-imports --config .importlinter`
 Expected: `Contracts: 5 kept, 0 broken.`
@@ -2935,7 +2935,7 @@ Expected: `Contracts: 5 kept, 0 broken.`
 Если контракт красный — чини код, а не контракт. Красный здесь означает,
 что фоновая работа и правда зависит от веба.
 
-- [ ] **Шаг 3: Коммит**
+- [x] **Шаг 3: Коммит**
 
 ```bash
 git add backend/.importlinter
@@ -2956,7 +2956,7 @@ git commit -m "chore: границы фоновой работы и воркер
 - Create: `frontend/src/routes/datasets.tsx`, `frontend/src/routes/jobs.tsx`
 - Modify: `frontend/src/router.tsx`, `frontend/src/components/site-nav.tsx`
 
-- [ ] **Шаг 1: Перегенерировать типы клиента**
+- [x] **Шаг 1: Перегенерировать типы клиента**
 
 ```bash
 make openapi
@@ -2965,7 +2965,7 @@ make openapi
 Без этого `tsc` не знает новых маршрутов, а `make check` краснеет на сверке
 типов со схемой — и выглядит это как поломка фронтенда.
 
-- [ ] **Шаг 2: Написать `frontend/src/routes/jobs.tsx`**
+- [x] **Шаг 2: Написать `frontend/src/routes/jobs.tsx`**
 
 Экран задач. Требования, а не разметка — вёрстку делай по образцу
 `frontend/src/routes/audit.tsx`, он ближе всего:
@@ -2986,7 +2986,7 @@ make openapi
   греет контур задаром. В TanStack Query это `refetchInterval` функцией от
   данных.
 
-- [ ] **Шаг 3: Написать `frontend/src/routes/datasets.tsx`**
+- [x] **Шаг 3: Написать `frontend/src/routes/datasets.tsx`**
 
 Экран таблиц. По образцу `frontend/src/routes/expenses.tsx`:
 
@@ -3004,7 +3004,7 @@ make openapi
 - ошибка поля из конверта встаёт под своим полем, общая — алертом. Так
   сделано на всех экранах ядра.
 
-- [ ] **Шаг 4: Добавить маршруты и ссылки**
+- [x] **Шаг 4: Добавить маршруты и ссылки**
 
 В `frontend/src/router.tsx` — две страницы. Экран таблиц тянет за собой
 разбор ответов и формы, экран задач лёгкий: обе грузи обычным `page(...)`,
@@ -3014,12 +3014,12 @@ make openapi
 В `frontend/src/components/site-nav.tsx` — две ссылки: «Таблицы» с ролью
 `viewer`, «Задачи» с ролью `viewer`.
 
-- [ ] **Шаг 5: Проверить**
+- [x] **Шаг 5: Проверить**
 
 Run: `make check`
 Expected: зелёный целиком.
 
-- [ ] **Шаг 6: Посмотреть глазами**
+- [x] **Шаг 6: Посмотреть глазами**
 
 ```bash
 cd backend && uv run uvicorn app.main:app --port 8000    # в фоне
@@ -3032,7 +3032,7 @@ cd frontend && npm run dev
 экран задач обязан сказать, что брать её некому, а не показывать вечное «в
 очереди». Это единственная проверка, которую не делает ни один тест.
 
-- [ ] **Шаг 7: Коммит**
+- [x] **Шаг 7: Коммит**
 
 ```bash
 git add frontend/src/routes/datasets.tsx frontend/src/routes/jobs.tsx \
@@ -3049,7 +3049,7 @@ git commit -m "feat: экраны таблиц и задач"
 - Modify: `.github/workflows/deploy.yml`
 - Modify: `docs/commands/status.md`, `docs/superpowers/runbooks/server-setup.md`
 
-- [ ] **Шаг 1: Запускать воркер той же доставкой**
+- [x] **Шаг 1: Запускать воркер той же доставкой**
 
 В теле удалённого скрипта `deploy.yml`, после блока запуска приложения:
 
@@ -3071,7 +3071,7 @@ fi
 Heredoc в кавычках, поэтому ни экранировать `$`, ни следить за обратными
 кавычками не нужно — это уже сделано и стоило одной сломанной доставки.
 
-- [ ] **Шаг 2: Научить `/status` спрашивать про воркер**
+- [x] **Шаг 2: Научить `/status` спрашивать про воркер**
 
 `<слаг>-status` сгенерирован провижинером под одно имя процесса и воркера не
 покажет. Скрипт создаётся на каждый слаг отдельно, поэтому правка провижинера
@@ -3086,12 +3086,12 @@ ssh <слаг>-ops sudo -u deploy PM2_HOME=/home/deploy/.pm2 pm2 describe <сл�
 и в текст — что живость очереди смотрят на экране «Задачи», а не по коду
 ответа контура.
 
-- [ ] **Шаг 3: Дописать runbook**
+- [x] **Шаг 3: Дописать runbook**
 
 В `docs/superpowers/runbooks/server-setup.md` — раздел про два процесса:
 имена, команда запуска воркера, и что `<слаг>-status` показывает только веб.
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 git add .github/workflows/deploy.yml docs/commands/status.md \
@@ -3107,7 +3107,7 @@ git commit -m "ci: воркер поднимается доставкой, /stat
 - Create: `frontend/tests/e2e/datasets.spec.ts`
 - Modify: `frontend/playwright.config.ts`
 
-- [ ] **Шаг 1: Поднимать воркер вместе с приложением**
+- [x] **Шаг 1: Поднимать воркер вместе с приложением**
 
 `webServer` в `playwright.config.ts` принимает список. Существующий объект
 с приложением становится **первым элементом массива без единой правки
@@ -3155,7 +3155,7 @@ git commit -m "ci: воркер поднимается доставкой, /stat
 Гасить процесс руками не нужно — Playwright снимает оба элемента списка
 после прогона тем же механизмом.
 
-- [ ] **Шаг 2: Написать сценарий**
+- [x] **Шаг 2: Написать сценарий**
 
 Create `frontend/tests/e2e/datasets.spec.ts`:
 
@@ -3221,14 +3221,14 @@ test("задача видна на экране задач и доходит д�
 })
 ```
 
-- [ ] **Шаг 3: Прогнать три раза подряд**
+- [x] **Шаг 3: Прогнать три раза подряд**
 
 Run: `cd frontend && npx playwright test`
 Expected: 14 passed (11 прежних + 3 новых), три прогона подряд без единого
 мигания. Сквозные сценарии — главный источник ложных отказов; проверка,
 падающая через раз, обесценивает весь прогон.
 
-- [ ] **Шаг 4: Коммит**
+- [x] **Шаг 4: Коммит**
 
 ```bash
 git add frontend/tests/e2e/datasets.spec.ts frontend/playwright.config.ts
@@ -3243,7 +3243,7 @@ git commit -m "test: сквозной сценарий слоя данных"
 - Modify: `CHECKLIST.md`, `AGENTS.md`, `docs/commands/onboarding.md`
 - Modify: `scripts/onboarding-check.mjs`
 
-- [ ] **Шаг 1: Обновить реестр возможностей**
+- [x] **Шаг 1: Обновить реестр возможностей**
 
 В `CHECKLIST.md` строки, стоявшие `absent` с пометкой «приедет спекой слоя
 данных», становятся `included`:
@@ -3265,7 +3265,7 @@ git commit -m "test: сквозной сценарий слоя данных"
 | `<слаг>-status` не видит воркер | Скрипт сгенерирован провижинером под одно имя процесса и создаётся на каждый слаг отдельно, поэтому правка провижинера не чинит заведённые контуры. Живость очереди смотрят на экране «Задачи» |
 | Один воркер | `SKIP LOCKED` рассчитан на любое их число, второй добавляется строкой в доставке. Делать это без нагрузки — удваивать эксплуатацию задаром |
 
-- [ ] **Шаг 2: Дописать правила в `AGENTS.md`**
+- [x] **Шаг 2: Дописать правила в `AGENTS.md`**
 
 Раздел про слой данных:
 
@@ -3279,7 +3279,7 @@ git commit -m "test: сквозной сценарий слоя данных"
   копируется база;
 - клиент внешних моделей в тестах и сквозных сценариях идёт в режиме `mock`.
 
-- [ ] **Шаг 3: Дописать установку**
+- [x] **Шаг 3: Дописать установку**
 
 В `docs/commands/onboarding.md` — шаг про каталог загрузок на контуре
 (`/var/www/<слаг>/uploads`, создаётся приложением) и про то, что после
@@ -3288,7 +3288,7 @@ git commit -m "test: сквозной сценарий слоя данных"
 В `scripts/onboarding-check.mjs` — проверка, что `UPLOAD_DIR` в `.env`
 контура задан либо намеренно оставлен пустым.
 
-- [ ] **Шаг 4: Прогнать всё и закоммитить**
+- [x] **Шаг 4: Прогнать всё и закоммитить**
 
 ```bash
 make check
