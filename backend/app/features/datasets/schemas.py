@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -51,7 +51,18 @@ class PredictRequest(BaseModel):
 
     # dict[str, float], а не dict[str, Any]: признаки у обученной модели
     # только числовые, и разбор строки в число — работа схемы, а не сервиса.
-    row: dict[str, float]
+    #
+    # allow_inf_nan=False — не придирка. Голый float принимает и NaN, и
+    # бесконечность, и `1e400` (столько не влезает в double), причём как
+    # литералами JSON, так и строками «nan»/«inf». Дальше их берёт sklearn и
+    # роняет ValueError, а человек получает 500 «Что-то пошло не так» без
+    # поля: чинить нечего, причина только в логе. Тот же охранник стоит у
+    # настроек (`core/config.py`), у сводки (`domain/tables.py`) и у записи
+    # строк (`_json_safe`) — на пути предсказания его забыли.
+    #
+    # С запретом отказ приходит от схемы: 400 с field="row", который форма
+    # уже умеет показывать.
+    row: dict[str, Annotated[float, Field(allow_inf_nan=False)]]
 
 
 class ModelOut(BaseModel):

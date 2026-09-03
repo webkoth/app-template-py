@@ -20,6 +20,7 @@ FEATURES = BACKEND / "app" / "features"
 
 INDEPENDENCE = "importlinter:contract:features-are-independent"
 THROUGH_SERVICE = "importlinter:contract:router-goes-through-service"
+JOBS_WITHOUT_HTTP = "importlinter:contract:jobs-do-not-know-about-http"
 
 
 def _listed(section: str, key: str) -> set[str]:
@@ -54,6 +55,21 @@ def test_every_router_is_watched_for_going_around_its_service():
     assert expected == _listed(THROUGH_SERVICE, "source_modules"), (
         "роутер есть, а под наблюдением его нет: он может ходить в модели "
         "мимо сервиса, и контракт этого не заметит"
+    )
+
+
+def test_every_feature_handler_is_watched_for_reaching_into_http():
+    expected = {
+        f"app.features.{name}.jobs"
+        for name in _features()
+        if (FEATURES / name / "jobs.py").is_file()
+    }
+    assert expected == _listed(JOBS_WITHOUT_HTTP, "source_modules"), (
+        "обработчик фоновых задач есть, а под наблюдением его нет: он может "
+        "импортировать роутеры и FastAPI, и контракт этого не заметит. "
+        "Фоновая работа, знающая про UploadFile, не зовётся ни из скрипта, "
+        "ни из планировщика — а узнать об этом можно только вычитав "
+        ".importlinter глазами"
     )
 
 

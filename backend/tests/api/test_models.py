@@ -272,6 +272,45 @@ async def test_prediction_uses_the_stored_model(client, session, login_as):
     assert response.json()["значение"] == pytest.approx(130, abs=0.01)
 
 
+# Тело шлётся ТЕКСТОМ, а не через json=: httpx сам отказывается
+# сериализовать NaN («Out of range float values are not JSON compliant»), и
+# через него до сервера такое значение не доедет. А настоящий клиент доедет:
+# NaN и Infinity — литералы, которых в JSON нет, но json-разборщик Python
+# принимает их по умолчанию, и 1e400 (столько не влезает в double) — тоже.
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity", "1e400"])
+async def test_prediction_refuses_a_value_that_is_not_a_number(
+    client, session, login_as, literal
+):
+    # Голый float принимает и NaN, и бесконечность, и 1e400 — столько не
+    # влезает в double. Дальше их берёт sklearn и роняет ValueError, а
+    # человек получает 500 «Что-то пошло не так» без поля: чинить нечего,
+    # причина только в логе. Тот же охранник стоит у настроек, у сводки и у
+    # записи строк — на пути предсказания его забыли.
+    from app.features.datasets import jobs as handlers
+
+    await login_as(role=Role.editor, login="ivan")
+    dataset = await prepare(client, session)
+    await client.post(
+        f"/api/datasets/{dataset.id}/models", json={"target_column": "цена"}
+    )
+    job = (
+        await session.execute(select(Job).where(Job.kind == "datasets.train"))
+    ).scalar_one()
+    await handlers.train(session, job)
+    await session.commit()
+    model = (await session.execute(select(ModelArtifact))).scalar_one()
+
+    response = await client.post(
+        f"/api/models/{model.id}/predict",
+        content=f'{{"row": {{"площадь": {literal}, "комнат": 2}}}}'.encode(),
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 400, "не 500: это ошибка ввода, а не сбой"
+    # Поле — имя КОЛОНКИ, а не «row»: конверт называет ключ внутри словаря,
+    # и форма подсветит именно ту ячейку, куда человек это ввёл.
+    assert response.json()["field"] == "площадь"
+
+
 async def test_prediction_names_the_missing_column(client, session, login_as):
     # Строка без нужной колонки — ошибка ввода, а не сбой. Без явного отказа
     # сборка строки падает KeyError, и человек получает 500 «Что-то пошло не

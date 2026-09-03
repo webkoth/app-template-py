@@ -49,7 +49,15 @@ def xlsx_body() -> bytes:
             "город": ["А", "Б"],
             # Дата намеренно: из XLSX она приезжает не строкой, а меткой
             # времени, и в JSONB такое значение само по себе не ложится.
-            "дата": pd.to_datetime(["2020-01-01", "2020-02-01"]),
+            #
+            # Вторая ПУСТАЯ, и это не украшение. Пропуск в колонке дат
+            # приезжает как NaT, а он наследник datetime: проверка на дату,
+            # стоящая раньше проверки на пропуск, зовёт у него isoformat() и
+            # кладёт в базу строку «NaT». Пустая ячейка молча превращается в
+            # текст, сводка объявляет колонку текстовой, и это живёт дальше.
+            # Пока обе даты были заполнены, порядок проверок не охранялся
+            # ничем — перестановка не роняла ни одного теста.
+            "дата": pd.to_datetime(["2020-01-01", None]),
         }
     ).to_excel(buffer, index=False)
     return buffer.getvalue()
@@ -254,6 +262,13 @@ async def test_kind_is_taken_from_the_content_not_from_the_name(
     # Метка времени из XLSX в JSONB сама не ложится: json её не берёт вовсе,
     # и падение случилось бы на записи — после всего разбора.
     assert rows[0].data["дата"].startswith("2020-01-01")
+    # А пустая ячейка-дата обязана остаться пустой. NaT — наследник
+    # datetime, и проверка на дату, стоящая раньше проверки на пропуск,
+    # зовёт у него isoformat() и кладёт строку «NaT»: пустая ячейка молча
+    # становится текстом, а сводка объявляет колонку текстовой. Порядок
+    # проверок в `_json_safe` объявлен несущим прямо в докстроке — вот
+    # охранник, который это держит.
+    assert rows[1].data["дата"] is None
 
 
 async def test_a_number_too_big_for_a_double_does_not_break_the_parse(
@@ -361,6 +376,71 @@ async def test_a_viewer_sees_why_someone_elses_table_is_stuck(
     listed = (await client.get("/api/datasets")).json()
     assert listed[0]["summary"] is None
     assert listed[0]["parse_error"] == "Таблица пуста"
+
+
+async def test_a_reparse_that_dies_halfway_does_not_keep_the_old_summary(
+    client, session, login_as, monkeypatch
+):
+    # Разбор коммитит частями: первая же отметка живости коммитит удаление
+    # прежних строк вместе с первой новой. Значит повторный проход, упавший
+    # после удаления, оставляет таблицу с УСЕЧЁННЫМИ строками — и, если не
+    # погасить сводку, со старой сводкой поверх них. Экран сказал бы
+    # «разобрана, 3 строки» над наполовину пустой таблицей, и разошлось бы
+    # это молча: ни отказа, ни расхождения не видно ниоткуда.
+    from app.features.datasets import jobs as handlers
+
+    await login_as(role=Role.editor, login="ivan")
+    await client.post("/api/datasets", files=upload())
+    job = await only_job(session)
+    await handlers.parse(session, job)
+    await session.commit()
+    dataset = (await session.execute(select(Dataset))).scalar_one()
+    assert dataset.summary is not None, "первый проход обязан посчитать"
+
+    def падает(frame):
+        raise RuntimeError("воркер не пережил счёт")
+
+    monkeypatch.setattr(handlers, "summarise", падает)
+    with pytest.raises(RuntimeError):
+        await handlers.parse(session, job)
+    await session.rollback()
+
+    dataset = (await session.execute(select(Dataset))).scalar_one()
+    assert dataset.summary is None, "старая сводка над новыми строками — ложь"
+    assert dataset.rows_count == 0
+
+
+async def test_a_failed_training_is_not_shown_as_a_broken_table(
+    client, session, login_as
+):
+    # Отбор причин идёт по ВИДУ задачи. Без этого упавшее обучение приезжает
+    # на экран таблиц как причина неразбора: экран смотрит parse_error
+    # раньше сводки, и разобранная таблица получает красный бейдж «не
+    # разобралась» с текстом про обучение — при живой сводке и посчитанных
+    # строках.
+    from app.core import jobs as queue
+    from app.features.datasets import jobs as handlers
+
+    await login_as(role=Role.editor, login="ivan")
+    await client.post("/api/datasets", files=upload())
+    parse_job = (await session.execute(select(Job))).scalar_one()
+    await handlers.parse(session, parse_job)
+    await session.commit()
+
+    # Задача обучения, упавшая окончательно.
+    training = queue.enqueue(
+        session,
+        kind="datasets.train",
+        payload={"dataset_id": str(parse_job.payload["dataset_id"])},
+        actor="ivan",
+    )
+    await session.commit()
+    training.attempts = 99
+    await queue.fail(session, training, "Нет числовых колонок")
+
+    listed = (await client.get("/api/datasets")).json()
+    assert listed[0]["summary"] is not None, "таблица разобрана"
+    assert listed[0]["parse_error"] is None, "отказ обучения — не отказ разбора"
 
 
 async def test_a_table_still_being_counted_has_no_reason_to_show(
