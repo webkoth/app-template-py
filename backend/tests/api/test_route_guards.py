@@ -227,6 +227,13 @@ def test_the_rest_of_the_api_is_guarded_by_role():
         "POST /api/datasets/{dataset_id}/models",
         "GET /api/datasets/{dataset_id}/models",
         "POST /api/models/{model_id}/predict",
+        # Экран задач. Свои задачи видит любой вошедший, все — только
+        # администратор, и разделяет их сам маршрут: роль здесь не только
+        # пропускает, но и решает, чью очередь показать. Признак живости
+        # воркера закрыт вместе со списком — анониму незачем знать, работает
+        # ли фоновая половина контура прямо сейчас.
+        "GET /api/jobs",
+        "GET /api/jobs/health",
         "GET /api/audit",
     ):
         assert name in guarded, f"{name} больше не проверяет роль"

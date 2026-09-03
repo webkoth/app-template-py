@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.core import jobs
 from app.core.jobs import Job, JobStatus
+from app.domain.roles import Role
 
 
 async def test_enqueue_does_not_commit_by_itself(session):
@@ -251,3 +252,217 @@ async def test_error_text_is_cut_not_dropped(session):
     await jobs.fail(session, job, "щ" * 5000)
     assert len(job.error) <= jobs.ERROR_MAX
     assert job.error.endswith("…")
+
+
+# --- экран задач -------------------------------------------------------
+#
+# Всё, что ниже, — про маршруты `app/features/jobs/`. Очередь выше проверена
+# сама по себе; здесь проверяется то, что человек про неё УВИДИТ.
+
+
+async def test_everyone_sees_only_their_own_jobs(client, session, login_as):
+    # Роль здесь самая низкая намеренно: обещание — «свои задачи видит
+    # каждый вошедший», и viewer это самый строгий случай. Пройдёт он —
+    # пройдут и остальные, ранг считает has_rank.
+    #
+    # Чужие задачи обычному человеку не отдаются. Это не про вкус: `actor` и
+    # `payload` рассказывают, кто чем занят и над какими данными, а список
+    # без фильтра — утечка, которую на экране не видно вовсе.
+    jobs.enqueue(session, kind="проба", payload={}, actor="ivan")
+    jobs.enqueue(session, kind="проба", payload={}, actor="петя")
+    await session.commit()
+
+    await login_as(role=Role.viewer, login="ivan")
+    mine = (await client.get("/api/jobs")).json()
+    assert [j["actor"] for j in mine] == ["ivan"]
+
+
+async def test_admin_sees_all_jobs(client, session, login_as):
+    jobs.enqueue(session, kind="проба", payload={}, actor="ivan")
+    jobs.enqueue(session, kind="проба", payload={}, actor="петя")
+    await session.commit()
+
+    await login_as(role=Role.admin, login="boss")
+    response = await client.get("/api/jobs")
+    # Код ответа проверяется отдельно, а состав — по именам, а не по длине.
+    # Написанное сначала `len(...) == 2` было зелёным на маршруте, которого
+    # ещё не существовало: конверт ошибки — это тоже словарь, и ключей в нём
+    # ровно два, error и field. Проверка длины на списке от API — вообще
+    # ненадёжная форма: она не отличает список от объекта.
+    assert response.status_code == 200
+    assert {j["actor"] for j in response.json()} == {"ivan", "петя"}
+
+
+async def test_jobs_screen_requires_login(client):
+    assert (await client.get("/api/jobs")).status_code == 401
+
+
+async def test_worker_health_requires_login(client):
+    # Признак живости закрыт вместе со всем остальным: он рассказывает
+    # анониму, работает ли фоновая половина контура прямо сейчас.
+    assert (await client.get("/api/jobs/health")).status_code == 401
+
+
+async def test_worker_liveness_is_reported(client, session, login_as):
+    # «В очереди» обязано быть отличимо от «некому взять». Без этого человек
+    # смотрит на задачу, которая никогда не начнётся, и ждёт.
+    await login_as(role=Role.admin, login="boss")
+    jobs.enqueue(session, kind="проба", payload={}, actor="boss")
+    await session.commit()
+
+    body = (await client.get("/api/jobs/health")).json()
+    assert body["воркер_жив"] is False, "ни одна задача ещё не бралась"
+
+    job = await jobs.claim(session)
+    assert job is not None
+    body = (await client.get("/api/jobs/health")).json()
+    assert body["воркер_жив"] is True
+
+
+async def test_a_silent_worker_is_not_alive(client, session, login_as):
+    # Вторая половина того же вопроса, и она важнее первой. Задача «взята и
+    # выполняется» выглядит на экране работой, а на деле её взял воркер,
+    # которого убила доставка час назад. Отличить это можно ТОЛЬКО по
+    # отметке живости: сама задача остаётся running и выглядит как прежде —
+    # ровно это и проверяется последней строкой.
+    await login_as(role=Role.admin, login="boss")
+    jobs.enqueue(session, kind="проба", payload={}, actor="boss")
+    await session.commit()
+    job = await jobs.claim(session)
+    assert job is not None
+    assert (await client.get("/api/jobs/health")).json()["воркер_жив"] is True
+
+    job.heartbeat_at = datetime.now(UTC) - timedelta(seconds=3600)
+    await session.commit()
+
+    assert (await client.get("/api/jobs/health")).json()["воркер_жив"] is False
+    assert (await client.get("/api/jobs")).json()[0]["status"] == "running"
+
+
+async def test_a_just_finished_job_still_shows_a_living_worker(
+    client, session, login_as
+):
+    # Признак считается по свежей отметке у ЛЮБОЙ задачи, а не только у
+    # выполняемой, и это не небрежность. Воркер, доделавший последнюю
+    # задачу, отметок среди running не оставляет вовсе — сузь запрос до них,
+    # и исправный контур объявлялся бы мёртвым в ту же секунду, в которую
+    # он закончил работу.
+    await login_as(role=Role.admin, login="boss")
+    jobs.enqueue(session, kind="проба", payload={}, actor="boss")
+    await session.commit()
+    job = await jobs.claim(session)
+    assert job is not None
+    await jobs.complete(session, job, {"строк": 1})
+
+    assert (await client.get("/api/jobs/health")).json()["воркер_жив"] is True
+
+
+async def test_newest_job_first(client, session, login_as):
+    await login_as(role=Role.admin, login="boss")
+    jobs.enqueue(session, kind="первая", payload={}, actor="boss")
+    await session.commit()
+    jobs.enqueue(session, kind="вторая", payload={}, actor="boss")
+    await session.commit()
+    kinds = [j["kind"] for j in (await client.get("/api/jobs")).json()]
+    assert kinds[0] == "вторая"
+
+
+async def test_jobs_of_the_same_moment_keep_a_stable_order(client, session, login_as):
+    # Второй ключ сортировки — id. created_at ставится в коде, и две задачи,
+    # поставленные в одну и ту же миллисекунду, без него возвращаются в
+    # порядке, который база не обещает. Экран обновляется раз в три секунды,
+    # и строки перетасовывались бы сами по себе — человек читает это как
+    # новую работу, а не как отсутствие сортировки.
+    #
+    # Идентификаторы заданы руками и в обратном порядке: uuid7 растёт со
+    # временем, поэтому у задач, созданных подряд, порядок вставки и порядок
+    # id совпадают — на таких данных пропажа второго ключа не видна.
+    await login_as(role=Role.admin, login="boss")
+    moment = datetime.now(UTC)
+    for number in (3, 2, 1):
+        session.add(
+            Job(
+                id=uuid.UUID(int=number),
+                kind=f"проба-{number}",
+                payload={},
+                actor="boss",
+                created_at=moment,
+            )
+        )
+    await session.commit()
+
+    rows = (await client.get("/api/jobs")).json()
+    assert [r["kind"] for r in rows] == ["проба-1", "проба-2", "проба-3"]
+
+
+async def test_limit_has_a_hard_ceiling(client, login_as):
+    await login_as(role=Role.admin, login="boss")
+    assert (await client.get("/api/jobs?limit=5000")).status_code == 400
+    assert (await client.get("/api/jobs?limit=0")).status_code == 400
+
+
+async def test_limit_actually_limits(client, session, login_as):
+    # Потолок в объявлении параметра доказывает только отказ на большом
+    # числе. Что запрос его ПРИМЕНЯЕТ, проверяет эта строка: в журнале
+    # аудита удаление `.limit(limit)` из сервиса прошло молча, и очередь —
+    # тот же случай, она растёт с каждой загрузкой файла.
+    await login_as(role=Role.admin, login="boss")
+    for kind in ("первая", "вторая", "третья"):
+        jobs.enqueue(session, kind=kind, payload={}, actor="boss")
+    await session.commit()
+    response = await client.get("/api/jobs?limit=1")
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+
+
+async def test_the_job_row_carries_what_the_screen_shows(
+    client, session, login_as, monkeypatch
+):
+    # Состав строки не проверяет ничто, кроме этого теста: поле, выпавшее из
+    # схемы, уезжает молча — прогон зелёный, а колонка на экране пустая.
+    # Дороже всех `error`: упавший разбор оставляет таблицу со сводкой NULL,
+    # и на экране таблиц это неотличимо от «считаем». Причина живёт здесь и
+    # больше нигде, кроме серверного лога.
+    #
+    # `payload` — по той же причине: без него десять строк «datasets.parse»
+    # выглядят одинаково, и понять, КАКАЯ таблица не разобралась, нельзя.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "job_max_attempts", 1)
+    await login_as(role=Role.admin, login="boss")
+
+    jobs.enqueue(
+        session, kind="datasets.parse", payload={"dataset_id": "abc"}, actor="boss"
+    )
+    await session.commit()
+    broken = await jobs.claim(session)
+    assert broken is not None
+    await jobs.fail(session, broken, "Файл пуст")
+
+    jobs.enqueue(
+        session, kind="datasets.train", payload={"target_column": "цена"}, actor="boss"
+    )
+    await session.commit()
+    finished = await jobs.claim(session)
+    assert finished is not None
+    await jobs.complete(session, finished, {"строк": 7})
+
+    rows = {r["kind"]: r for r in (await client.get("/api/jobs")).json()}
+
+    parse = rows["datasets.parse"]
+    assert parse["id"]
+    assert parse["created_at"]
+    assert parse["status"] == JobStatus.failed.value
+    assert parse["error"] == "Файл пуст"
+    assert parse["attempts"] == 1
+    assert parse["actor"] == "boss"
+    assert parse["payload"] == {"dataset_id": "abc"}
+    assert parse["finished_at"] is not None
+    assert parse["result"] is None
+
+    train = rows["datasets.train"]
+    assert train["status"] == JobStatus.done.value
+    assert train["result"] == {"строк": 7}
+    assert train["progress"] == 100
+    assert train["error"] == ""
+    assert train["payload"] == {"target_column": "цена"}

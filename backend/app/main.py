@@ -15,6 +15,7 @@ from app.features.auth.service import ensure_bootstrap_user
 from app.features.datasets.router import models_router as datasets_models_router
 from app.features.datasets.router import router as datasets_router
 from app.features.expenses.router import router as expenses_router
+from app.features.jobs.router import router as jobs_router
 from app.features.meta.router import router as meta_router
 from app.features.users.router import router as users_router
 
@@ -74,6 +75,7 @@ def create_app() -> FastAPI:
         expenses_router,
         datasets_router,
         datasets_models_router,
+        jobs_router,
         audit_router,
     ):
         app.include_router(router, prefix="/api", responses=ERROR_RESPONSES)

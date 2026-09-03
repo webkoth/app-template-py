@@ -36,6 +36,7 @@ modules =
     app.features.audit
     app.features.meta
     app.features.datasets
+    app.features.jobs
 
 [importlinter:contract:router-goes-through-service]
 name = router не ходит в модели мимо service
@@ -53,8 +54,14 @@ source_modules =
     app.features.datasets.router
     app.features.audit.router
     app.features.meta.router
+    app.features.jobs.router
 forbidden_modules =
     app.features.expenses.models
     app.features.datasets.models
     app.core.users
     app.core.audit
+    # Очередь — такая же таблица в core, как журнал и учётные записи, и
+    # закрыта от роутеров по той же причине. Здесь она не формальность:
+    # роутер экрана задач собирает ответ ИЗ объектов Job, и сходить за ними
+    # самому, минуя сервис, — первое, что просится.
+    app.core.jobs
