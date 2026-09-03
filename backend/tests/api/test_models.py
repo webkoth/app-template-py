@@ -258,7 +258,18 @@ async def test_prediction_uses_the_stored_model(client, session, login_as):
         json={"row": {"площадь": 50, "комнат": 2}},
     )
     assert response.status_code == 200, response.text
-    assert isinstance(response.json()["значение"], float)
+    # Проверяется ЧИСЛО, а не его тип. `isinstance(..., float)` зелен и на
+    # функции, возвращающей константу, — то есть не охраняет ни того, что
+    # предсказание вообще считается моделью, ни порядка признаков.
+    #
+    # Порядок здесь и есть главное. Фикстура линейна (цена = 3 × площадь −
+    # 20), поэтому 50 квадратов дают ровно 130. Переставь значения местами
+    # (мутация `reversed(model_row.feature_columns)` в сервисе) — выйдет
+    # −14: не отказ, а тихо неверное число, которое человек примет за
+    # ответ. Комментарий над той строкой называет это место опасным, и без
+    # этой проверки все 390 тестов оставались зелёными на переставленных
+    # признаках.
+    assert response.json()["значение"] == pytest.approx(130, abs=0.01)
 
 
 async def test_prediction_names_the_missing_column(client, session, login_as):
