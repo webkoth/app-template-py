@@ -31,6 +31,16 @@ from app.core.db import Base
 # причине отказа.
 ERROR_MAX = 1024
 
+# Причина, которую очередь пишет сама, — единственный отказ, о котором
+# рассказать некому: воркер умер, не дойдя ни до результата, ни до
+# исключения. Текст называет число попыток, потому что «задача не
+# выполнилась» без него человек читает как поломку своей таблицы, а дело в
+# том, что счёт не переживают.
+_ABANDONED = (
+    "Задачу брали {attempts} раз(а), и ни разу счёт не дошёл до конца — "
+    "воркер не пережил её. Попытки исчерпаны."
+)
+
 
 class JobStatus(StrEnum):
     queued = "queued"
@@ -96,8 +106,8 @@ def enqueue(
     return job
 
 
-async def claim(session: AsyncSession) -> Job | None:
-    """Берёт одну задачу и помечает выполняемой. None — брать нечего.
+async def _abandoned_or_waiting(session: AsyncSession) -> Job | None:
+    """Одна строка-кандидат: ожидающая ИЛИ брошенная. None — нет таких.
 
     Один запрос делает две вещи разом: берёт ожидающую задачу И
     возвращает брошенную. Отдельного уборщика зависших нет намеренно —
@@ -107,7 +117,7 @@ async def claim(session: AsyncSession) -> Job | None:
     stale_before = datetime.now(UTC) - timedelta(
         seconds=settings.job_stale_after_seconds
     )
-    job = (
+    return (
         await session.execute(
             select(Job)
             .where(
@@ -144,16 +154,62 @@ async def claim(session: AsyncSession) -> Job | None:
             .with_for_update(skip_locked=True)
         )
     ).scalar_one_or_none()
-    if job is None:
-        return None
 
-    now = datetime.now(UTC)
-    job.status = JobStatus.running
-    job.attempts += 1
-    job.started_at = now
-    job.heartbeat_at = now
-    await session.commit()
-    return job
+
+async def claim(session: AsyncSession) -> Job | None:
+    """Берёт одну задачу и помечает выполняемой. None — брать нечего.
+
+    Кандидатов подбирает `_abandoned_or_waiting`, а здесь решается, что с
+    кандидатом делать: взять или закрыть отказом по исчерпанным попыткам.
+
+    Потолок попыток проверяется ИМЕННО ЗДЕСЬ, а не только в `fail`. `fail`
+    зовёт воркер, поймав исключение обработчика, — то есть только тогда,
+    когда воркер жив и успел сказать. Отказ, при котором он ничего сказать
+    не успевает (OOM, kill -9, перезапуск доставкой посреди счёта), до
+    `fail` не доходит вовсе: задача остаётся `running`, протухает, берётся
+    снова — и так без конца. Проверено на живой базе: при потолке в 3
+    попытки задача доходила до attempts=7 с пустым `error`. Воркер один,
+    поэтому вставала вся очередь, а на экране это выглядело идущей работой:
+    отметку живости только что поставил сам `claim`, и предупреждение
+    «задачи некому взять» не появлялось.
+
+    Просто перестать брать такую задачу нельзя — она стала бы невидимой
+    навсегда, то есть тем же молчанием с другой стороны, и заслонила бы
+    собой очередь: `claim` берёт самую старую подходящую. Поэтому она
+    закрывается отказом с человеческой причиной, и берётся следующая.
+    """
+    while True:
+        job = await _abandoned_or_waiting(session)
+        if job is None:
+            return None
+
+        if (
+            job.status is JobStatus.running
+            and job.attempts >= settings.job_max_attempts
+        ):
+            # Отказ пишется через `fail`, а не своей строкой: «как задача
+            # умирает» обязано жить в одном месте — там обрезка текста,
+            # отметка времени и решение про статус.
+            #
+            # Условие смотрит на `running`, а не на любую задачу с
+            # исчерпанными попытками. Очередь с `queued` и attempts на
+            # потолке появляется только при опущенной на ходу настройке, и
+            # в её `error` уже лежит настоящая причина прошлого отказа —
+            # затерев её выдуманной, мы потеряли бы единственный текст,
+            # который человек прочитает. Такая задача пойдёт обычным путём
+            # и закроется по своей причине.
+            await fail(session, job, _ABANDONED.format(attempts=job.attempts))
+            # Следующий круг: закрытая задача под отбор больше не попадает,
+            # поэтому цикл конечен.
+            continue
+
+        now = datetime.now(UTC)
+        job.status = JobStatus.running
+        job.attempts += 1
+        job.started_at = now
+        job.heartbeat_at = now
+        await session.commit()
+        return job
 
 
 async def heartbeat(session: AsyncSession, job: Job, progress: int) -> None:

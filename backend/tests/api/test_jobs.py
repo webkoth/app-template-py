@@ -194,6 +194,64 @@ async def test_failure_returns_the_job_until_attempts_run_out(session, monkeypat
     assert second.finished_at is not None
 
 
+async def test_a_job_the_worker_never_survives_stops_at_the_ceiling(
+    session, monkeypatch
+):
+    # Потолок попыток обязан действовать и тогда, когда воркер УМЕР, не
+    # сказав ни слова: OOM, kill -9, перезапуск доставкой посреди счёта.
+    # `fail` в таком отказе не зовётся никем, а `claim` до этой правки на
+    # `attempts` не смотрел вовсе — задача крутилась вечно с пустым
+    # `error`. Воркер один, поэтому вставала ВСЯ очередь, и на экране это
+    # выглядело идущей работой: `claim` только что поставил свежую отметку,
+    # значит и предупреждения «задачи некому взять» не было.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "job_max_attempts", 2)
+    jobs.enqueue(session, kind="проба", payload={}, actor="boss")
+    await session.commit()
+
+    for attempt in (1, 2):
+        taken = await jobs.claim(session)
+        assert taken is not None, f"попытка {attempt} не состоялась"
+        assert taken.attempts == attempt
+        # Воркер умер: отметка протухла, `fail` не позвал никто.
+        taken.heartbeat_at = datetime.now(UTC) - timedelta(seconds=3600)
+        await session.commit()
+
+    assert await jobs.claim(session) is None, (
+        "задача с исчерпанными попытками взята снова — потолок не действует"
+    )
+    row = (await session.execute(select(Job))).scalar_one()
+    assert row.status is JobStatus.failed
+    assert row.attempts == 2
+    assert row.error, "отказ без причины — то же молчание, только с другой стороны"
+    assert row.finished_at is not None
+
+
+async def test_an_abandoned_job_does_not_hide_the_ones_behind_it(session, monkeypatch):
+    # Вторая половина того же: просто ПЕРЕСТАТЬ брать исчерпанную задачу
+    # нельзя. Она осталась бы «выполняющейся» навсегда, а очередь за ней —
+    # невидимой, потому что claim берёт самую старую подходящую. Отказ
+    # обязан состояться, и следующая задача обязана поехать.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "job_max_attempts", 1)
+    jobs.enqueue(session, kind="мёртвая", payload={}, actor="boss")
+    await session.commit()
+    dead = await jobs.claim(session)
+    assert dead is not None
+    dead.heartbeat_at = datetime.now(UTC) - timedelta(seconds=3600)
+    await session.commit()
+
+    jobs.enqueue(session, kind="живая", payload={}, actor="boss")
+    await session.commit()
+
+    alive = await jobs.claim(session)
+    assert alive is not None, "исчерпанная задача заслонила собой очередь"
+    assert alive.kind == "живая"
+    assert dead.status is JobStatus.failed
+
+
 async def test_a_running_job_without_a_mark_is_not_stuck_forever(session):
     # Обратная сторона протухания, и она не симметрична: сравнение с NULL в
     # SQL даёт NULL, поэтому «выполняется, отметки нет» — это не «свежая
