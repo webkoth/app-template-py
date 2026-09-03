@@ -30,7 +30,14 @@ FileDep = Annotated[UploadFile, File()]
 async def list_datasets(
     session: SessionDep, _: CurrentUser = ViewerDep
 ) -> list[DatasetOut]:
-    return [DatasetOut.model_validate(d) for d in await service.list_datasets(session)]
+    datasets = await service.list_datasets(session)
+    failures = await service.parse_failures(session, datasets)
+    return [
+        DatasetOut.model_validate(dataset).model_copy(
+            update={"parse_error": failures.get(dataset.id)}
+        )
+        for dataset in datasets
+    ]
 
 
 @router.post("", response_model=DatasetOut, status_code=status.HTTP_201_CREATED)

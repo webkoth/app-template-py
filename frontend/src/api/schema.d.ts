@@ -482,6 +482,8 @@ export interface components {
             summary: {
                 [key: string]: unknown;
             } | null;
+            /** Parse Error */
+            parse_error?: string | null;
             /** Rows Count */
             rows_count: number;
             /** Actor */

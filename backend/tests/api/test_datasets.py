@@ -329,6 +329,55 @@ async def test_deleting_a_dataset_takes_its_rows_and_its_file(
     assert list(uploads.iterdir()) == []
 
 
+async def test_a_viewer_sees_why_someone_elses_table_is_stuck(
+    client, session, login_as
+):
+    """Пустая сводка означает и «считаем», и «разбор упал» — это разное.
+
+    Причина живёт в задаче, но список задач видят только поставивший её и
+    администратор, а список таблиц — каждый вошедший. Без этой связи viewer,
+    глядящий на чужую застрявшую таблицу, ждал бы результата, которого не
+    будет, и причину не увидел бы нигде. Ослаблять права на очередь при этом
+    нельзя: в задачах лежит чужая работа целиком.
+    """
+    from app.core import jobs as queue
+    from app.domain.tables import TableError
+    from app.features.datasets import jobs as handlers
+
+    await login_as(role=Role.editor, login="ivan")
+    await client.post("/api/datasets", files=upload("пусто.csv", b"\n"))
+    job = (await session.execute(select(Job))).scalar_one()
+    job.status = JobStatus.running
+    job.attempts = 99  # попытки исчерпаны: следующий отказ — окончательный
+    await session.commit()
+
+    with pytest.raises(TableError):
+        await handlers.parse(session, job)
+    await session.rollback()
+    await session.refresh(job)
+    await queue.fail(session, job, "Таблица пуста")
+
+    await login_as(role=Role.viewer, login="петя")
+    listed = (await client.get("/api/datasets")).json()
+    assert listed[0]["summary"] is None
+    assert listed[0]["parse_error"] == "Таблица пуста"
+
+
+async def test_a_table_still_being_counted_has_no_reason_to_show(
+    client, session, login_as
+):
+    # Обратная сторона: у несосчитанной таблицы причины нет и быть не должно.
+    # Пустая причина при пустой сводке означает «работа идёт» — если бы сюда
+    # попадала любая задача, а не только отказавшая, экран показывал бы
+    # причину отказа у того, что спокойно считается.
+    await login_as(role=Role.editor, login="ivan")
+    await client.post("/api/datasets", files=upload())
+
+    listed = (await client.get("/api/datasets")).json()
+    assert listed[0]["summary"] is None
+    assert listed[0]["parse_error"] is None
+
+
 async def test_deleting_unknown_dataset_is_404(client, login_as):
     await login_as(role=Role.editor, login="ivan")
     missing = "01a05000-0000-7000-8000-000000000000"

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import jobs, storage
 from app.core.audit import write_audit
 from app.core.errors import RecordNotFound, RuleViolation
-from app.core.jobs import Job
+from app.core.jobs import Job, JobStatus
 from app.features.datasets.jobs import NUMERIC_KIND, PARSE, TRAIN
 from app.features.datasets.models import Dataset, ModelArtifact
 
@@ -30,6 +30,38 @@ async def list_datasets(session: AsyncSession) -> list[Dataset]:
         select(Dataset).order_by(Dataset.created_at.desc(), Dataset.id)
     )
     return list(result.scalars().all())
+
+
+async def parse_failures(
+    session: AsyncSession, datasets: list[Dataset]
+) -> dict[uuid.UUID, str]:
+    """Причины, по которым разбор перечисленных таблиц не состоялся.
+
+    Одним запросом на весь список, а не по запросу на строку: экран
+    показывает двадцать таблиц, и двадцать первый запрос к базе ради текста
+    ошибки — цена, которую платят на каждом открытии страницы.
+
+    Берутся только отказавшие задачи разбора. Задача, которая ещё считается
+    или ждёт очереди, причины не имеет — и не должна: пустая причина у
+    несосчитанной таблицы означает «работа идёт», и это другое состояние.
+    """
+    if not datasets:
+        return {}
+    wanted = {str(dataset.id) for dataset in datasets}
+    rows = (
+        (
+            await session.execute(
+                select(Job).where(
+                    Job.kind == PARSE,
+                    Job.status == JobStatus.failed,
+                    Job.payload["dataset_id"].astext.in_(wanted),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {uuid.UUID(job.payload["dataset_id"]): job.error for job in rows}
 
 
 async def get_dataset(session: AsyncSession, dataset_id: uuid.UUID) -> Dataset:
