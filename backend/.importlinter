@@ -11,13 +11,20 @@ name = domain не знает ни про базу, ни про HTTP, ни пр�
 type = forbidden
 source_modules =
     app.domain
+# Список ведётся руками и потому отстаёт: до этой строки в нём не было
+# ничего про внешние модели, и `app/domain/` мог сходить за ответом по сети,
+# не нарушив ни одного контракта. Чистая логика тем и ценна, что её можно
+# посчитать без сети, ключей и чужого тарифа. Появился новый источник
+# ввода-вывода — впиши его сюда, иначе правило на него не распространяется.
 forbidden_modules =
     app.core
     app.features
+    app.integrations
     sqlalchemy
     asyncpg
     alembic
     fastapi
+    httpx
 
 [importlinter:contract:features-are-independent]
 name = фичи не лезут друг другу внутрь

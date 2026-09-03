@@ -154,6 +154,24 @@ def test_layer_defaults_are_usable_without_env():
     assert s.job_stale_after_seconds == 60.0
     assert s.job_max_attempts == 3
     assert s.integrations_mode == "mock"
+    # Ключа и адреса поставщика нет намеренно: режим mock их не требует, а
+    # обязательное поле заставило бы заполнять их всех, включая тех, кому
+    # внешние модели не нужны вовсе.
+    assert s.integrations_url == ""
+    assert s.integrations_api_key == ""
+    assert s.integrations_timeout_seconds == 30.0
+
+
+def test_integrations_timeout_must_be_positive():
+    # Ноль и отрицательное — это запрос, отваливающийся, не начавшись: на
+    # экране «внешняя модель не ответила за 0 с», а к модели не обратились ни
+    # разу. Верхней границы нет намеренно, у поставщиков разный нрав; про
+    # связь с JOB_STALE_AFTER_SECONDS сказано в .env.example.
+    with pytest.raises(ValidationError) as e:
+        Settings(_env_file=None, **{**BASE, "INTEGRATIONS_TIMEOUT_SECONDS": "0"})
+    # Про саму границу, а не только про имя поля: отказ `extra="forbid"`
+    # содержал бы то же имя и был бы зелёным в мире, где поля нет вовсе.
+    assert "greater than 0" in str(e.value)
 
 
 def test_upload_dir_is_absolute_and_inside_the_repository():
